@@ -1,0 +1,33 @@
+# Byte-compiled / cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Build and distribution artifacts
+dist/
+build/
+output/
+*.spec
+
+# Installer outputs
+*.exe
+*.msi
+*.iss
+
+# IDE/editor configs
+.vscode/
+.idea/
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
+
+# CSVs / local datasets (optional: remove if you want them tracked)
+*.csv
