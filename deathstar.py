@@ -1,11 +1,17 @@
 # deathstar.py — The Death Star (GUI)
-# v2025-09-29 — Email + Dialer + Warm Leads + Analytics (charts) + Plain Paste RC + Resizable Columns
+# v2025-10-01 — Email + Dialer + Warm Leads + Analytics (charts) + Plain Paste RC + Resizable Columns
 # Requires: PySimpleGUI, tksheet, matplotlib; (optional) pywin32 for Outlook
 
 import os, sys, csv, html, time, re, hashlib, configparser, io, base64
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# --- Force vendored PySimpleGUI 4.60.x ---
+_VENDOR_PSG = Path(__file__).parent / "vendor_psg"
+if str(_VENDOR_PSG) not in sys.path:
+    sys.path.insert(0, str(_VENDOR_PSG))
 import PySimpleGUI as sg
+# -----------------------------------------
 
 set_theme = getattr(sg, "theme", getattr(sg, "ChangeLookAndFeel", None))
 
@@ -26,7 +32,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-APP_VERSION = "2025-09-29"
+APP_VERSION = "2025-10-01"
+
 
 # -------------------- App data locations --------------------
 APP_DIR      = Path(os.environ.get("APPDATA", str(Path.home()))) / "DeathStarApp"  # Roaming
@@ -35,10 +42,11 @@ STATE_PATH   = APP_DIR / "annihilated_planets.txt"
 TPL_PATH     = APP_DIR / "templates.ini"
 RESULTS_PATH = APP_DIR / "results.csv"
 
-# Dialer / warm / no-interest files
+# Dialer / warm / no-interest / customers files
 DIALER_RESULTS_PATH = APP_DIR / "dialer_results.csv"
 WARM_LEADS_PATH     = APP_DIR / "warm_leads.csv"
 NO_INTEREST_PATH    = APP_DIR / "no_interest.csv"
+CUSTOMERS_PATH      = APP_DIR / "customers.csv"
 
 # -------------------- Outlook settings ----------------------
 DEATHSTAR_SUBFOLDER = "Order 66"   # Drafts subfolder
@@ -50,9 +58,22 @@ HEADER_FIELDS = [
     "Address","City","State","Reviews","Website"
 ]
 
+# Warm Leads sheet headers (grid) — WITHOUT Engagement/Potential/Timing/Total
 WARM_FIELDS = [
-    "Timestamp","Email","First Name","Last Name","Company","Industry",
-    "Phone","City","State","Website","Note","Source"
+    "Company","Prospect Name","Phone #","Email",
+    "Location","Industry","Google Reviews","Rep","Samples?","Timestamp",
+    "Call 1 Notes","Call 2 Date","Call 2 Notes","Call 3 Date","Call 3 Notes",
+    "Call 4 Date","Call 4 Notes","Call 5 Date","Call 5 Notes","Call 6 Date","Call 6 Notes",
+    "Call 7 Dates","Call 7 Notes","Call 8 Date","Call 8 Notes","Call 9 Date","Call 9 Notes",
+    "Call 10 Date","Call 10 Notes","Call 11 Date","Call 11 Notes","Call 12 Date","Call 12 Notes",
+    "Call 13 Date","Call 13 Notes","Call 14 Date","Call 14 Notes"
+]
+
+# Customers sheet headers
+CUSTOMER_FIELDS = [
+    "Company","Prospect Name","Phone #","Email",
+    "Location","Industry","Google Reviews","Rep","Samples?","Timestamp",
+    "Opening Order $","Customer Since","Notes"
 ]
 
 # -------------------- UI tuning -----------------------------
@@ -127,6 +148,7 @@ def ensure_app_files():
     ensure_dialer_files()
     ensure_warm_file()
     ensure_no_interest_file()
+    # customers.csv ensured when mounting grid (and in Part 2 before saving)
 
 def save_templates_ini(templates_dict, subjects_dict, map_dict):
     cfg = configparser.ConfigParser()
@@ -145,6 +167,7 @@ def load_templates_ini():
     for k,v in DEFAULT_TEMPLATES.items(): tpls.setdefault(k, v)
     for k,v in DEFAULT_SUBJECTS.items():  subs.setdefault(k, v)
     return tpls, subs, mp
+
 # ============================================================
 # Results persistence
 # ============================================================
@@ -264,13 +287,16 @@ def dialer_save_call(row_dict, outcome, note):
     if (outcome or "").lower() == "green":
         with WARM_LEADS_PATH.open("a", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
-            w.writerow([
-                ts,
-                row_dict.get("Email",""), row_dict.get("First Name",""), row_dict.get("Last Name",""),
-                row_dict.get("Company",""), row_dict.get("Industry",""), row_dict.get("Phone",""),
-                row_dict.get("City",""), row_dict.get("State",""), row_dict.get("Website",""),
-                note, "Dialer"
-            ])
+            row = {h:"" for h in WARM_FIELDS}
+            row["Company"]   = row_dict.get("Company","")
+            row["Prospect Name"] = f"{row_dict.get('First Name','')} {row_dict.get('Last Name','')}".strip()
+            row["Phone #"]   = row_dict.get("Phone","")
+            row["Email"]     = row_dict.get("Email","")
+            row["Location"]  = f"{row_dict.get('City','')}, {row_dict.get('State','')}".strip(", ")
+            row["Industry"]  = row_dict.get("Industry","")
+            row["Google Reviews"] = row_dict.get("Reviews","")
+            row["Timestamp"] = ts
+            w.writerow([row.get(h,"") for h in WARM_FIELDS])
 
 def add_no_interest(row_dict, note, no_contact_flag: int, source: str):
     ensure_no_interest_file()
@@ -309,15 +335,17 @@ def add_warm_from_result(result_row, note="Email Results"):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with WARM_LEADS_PATH.open("a", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow([
-            ts,
-            result_row.get("Email",""),
-            enr.get("First Name",""), enr.get("Last Name",""),
-            result_row.get("Company",""), result_row.get("Industry",""),
-            enr.get("Phone",""), enr.get("City",""), enr.get("State",""),
-            enr.get("Website",""),
-            note, "EmailResults"
-        ])
+        row = {h:"" for h in WARM_FIELDS}
+        row["Company"] = result_row.get("Company","")
+        row["Prospect Name"] = f"{enr.get('First Name','')} {enr.get('Last Name','')}".strip()
+        row["Phone #"] = enr.get("Phone","")
+        row["Email"] = result_row.get("Email","")
+        row["Location"] = f"{enr.get('City','')}, {enr.get('State','')}".strip(", ")
+        row["Industry"] = result_row.get("Industry","")
+        row["Google Reviews"] = enr.get("Reviews","")
+        row["Timestamp"] = ts
+        row["Call 1 Notes"] = note
+        w.writerow([row.get(h,"") for h in WARM_FIELDS])
 
 def add_no_interest_from_result(result_row, note="Email Results", no_contact_flag=0):
     ensure_no_interest_file()
@@ -443,6 +471,7 @@ def _png_from_bar(labels, values, title):
     plt.close(fig)
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("ascii")
+
 # ============================================================
 # “Add New Template” dialog
 # ============================================================
@@ -596,6 +625,7 @@ def _enable_column_resizing(sheet_obj):
 # ============================================================
 
 def main():
+    print(">>> ENTERING main()")	
     ensure_app_files()
     templates, subjects, mapping = load_templates_ini()
 
@@ -741,27 +771,51 @@ def main():
          sg.Column(dialer_controls, vertical_alignment="top", pad=((10,0),(0,0)))]
     ]
 
-    # -------- Warm Leads tab --------
+    # -------- Warm Leads tab (tksheet grid) --------
     ensure_warm_file()
-    warm_rows = []
-    if WARM_LEADS_PATH.exists():
-        with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
-            rdr = csv.DictReader(f)
-            for r in rdr:
-                warm_rows.append(r)
 
-    warm_table_data = [[r.get(h, "") for h in WARM_FIELDS] for r in warm_rows]
+    warm_host = sg.Frame(
+        "WARM LEADS GRID (paste from Google Sheets / Excel)",
+        [[sg.Text("Loading warm grid…", key="-WARM_LOAD-", text_color="#9EE493")]],
+        relief=sg.RELIEF_GROOVE, border_width=2, background_color="#1B1B1B",
+        title_color="#9EE493", expand_x=True, expand_y=True, key="-WARM_HOST-",
+    )
+
+    warm_controls = [
+        sg.Button("Save Warm Leads", key="-WARM_SAVE-"),
+        sg.Button("Export Warm Leads CSV", key="-WARM_EXPORT-"),
+        sg.Button("Reload Warm", key="-WARM_RELOAD-"),
+        sg.Button("→ Confirm New Customer", key="-WARM_MARK_CUSTOMER-", button_color=("white","#2E7D32")),
+        sg.Text("", key="-WARM_STATUS-", text_color="#A0FFA0")
+    ]
 
     warm_tab = [
-        [sg.Text("Live from warm_leads.csv", text_color="#CCCCCC")],
-        [sg.Table(values=warm_table_data, headings=WARM_FIELDS,
-                  auto_size_columns=False, col_widths=[18,26,12,12,22,14,14,14,8,26,28,12],
-                  key="-WARM_TABLE-", num_rows=14, alternating_row_color="#2a2a2a",
-                  text_color="#EEE", background_color="#111",
-                  header_text_color="#FFF", header_background_color="#333")],
-        [sg.Button("Export Warm Leads CSV", key="-WARM_EXPORT-"),
-         sg.Button("Reload Warm", key="-WARM_RELOAD-"),
-         sg.Text("", key="-WARM_STATUS-", text_color="#A0FFA0")]
+        [warm_host],
+        warm_controls
+    ]
+
+    # -------- Customers tab (tksheet grid) --------
+    if not CUSTOMERS_PATH.exists():
+        with CUSTOMERS_PATH.open("w", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerow(CUSTOMER_FIELDS)
+
+    customers_host = sg.Frame(
+        "CUSTOMERS GRID",
+        [[sg.Text("Loading customers grid…", key="-CUST_LOAD-", text_color="#9EE493")]],
+        relief=sg.RELIEF_GROOVE, border_width=2, background_color="#1B1B1B",
+        title_color="#9EE493", expand_x=True, expand_y=True, key="-CUST_HOST-",
+    )
+
+    customers_controls = [
+        sg.Button("Save Customers", key="-CUST_SAVE-"),
+        sg.Button("Export Customers CSV", key="-CUST_EXPORT-"),
+        sg.Button("Reload Customers", key="-CUST_RELOAD-"),
+        sg.Text("", key="-CUST_STATUS-", text_color="#A0FFA0")
+    ]
+
+    customers_tab = [
+        [customers_host],
+        customers_controls
     ]
 
     # -------- Analytics tab --------
@@ -807,6 +861,7 @@ def main():
                        sg.Tab("Email Results",  results_tab, expand_x=True, expand_y=True),
                        sg.Tab("Dialer",         dialer_tab,  expand_x=True, expand_y=True),
                        sg.Tab("Warm Leads",     warm_tab,    expand_x=True, expand_y=True),
+                       sg.Tab("Customers",      customers_tab, expand_x=True, expand_y=True),
                        sg.Tab("Analytics",      analytics_tab, expand_x=True, expand_y=True)]],
                      expand_x=True, expand_y=True)]
     ]
@@ -831,7 +886,13 @@ def main():
     sheet_holder = sg.tk.Frame(host_frame_tk, bg="#111111")
     sheet_holder.pack(side="top", fill="both", expand=True)
 
-    existing = load_csv_to_matrix()
+    existing = []
+    if CSV_PATH.exists():
+        with CSV_PATH.open("r", encoding="utf-8", newline="") as f:
+            rdr = csv.DictReader(f)
+            for r in rdr:
+                existing.append([r.get(h,"") for h in HEADER_FIELDS])
+
     if existing:
         data = existing + [[""] * len(HEADER_FIELDS) for _ in range(max(0, START_ROWS - len(existing)))]
     else:
@@ -849,7 +910,6 @@ def main():
         "drag_select","column_drag_and_drop","row_drag_and_drop",
         "copy","cut","delete","undo","edit_cell","return_edit_cell",
         "select_all","right_click_popup_menu",
-        # attempt common resize flags while we're here (some versions accept it here)
         "column_width_resize","column_resize","resize_columns"
     ))
     try:
@@ -866,7 +926,6 @@ def main():
         try: sheet.column_width(c, width=DEFAULT_COL_WIDTH)
         except Exception: pass
 
-    # Force plain-text paste + RC menu
     _bind_plaintext_paste_for_tksheet(sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(sheet, window.TKroot)
     _enable_column_resizing(sheet)
@@ -929,10 +988,160 @@ def main():
             width = 120
         try: dial_sheet.column_width(c, width=width)
         except Exception: pass
-
     _bind_plaintext_paste_for_tksheet(dial_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(dial_sheet, window.TKroot)
     _enable_column_resizing(dial_sheet)
+
+    # ---------- Warm grid (tksheet) ----------
+    warm_host_tk = warm_host.Widget
+    for child in warm_host_tk.winfo_children():
+        try: child.destroy()
+        except Exception: pass
+    warm_holder = sg.tk.Frame(warm_host_tk, bg="#111111")
+    warm_holder.pack(side="top", fill="both", expand=True)
+
+    warm_matrix = []
+    if WARM_LEADS_PATH.exists():
+        try:
+            with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    warm_matrix.append([r.get(h, "") for h in WARM_FIELDS])
+        except Exception:
+            warm_matrix = []
+    if len(warm_matrix) < 100:
+        warm_matrix += [[""] * len(WARM_FIELDS) for _ in range(100 - len(warm_matrix))]
+
+    try:
+        from tksheet import Sheet as WarmSheet
+    except Exception:
+        popup_error("tksheet not installed. Run: pip install tksheet")
+        return
+
+    warm_sheet = WarmSheet(
+        warm_holder,
+        data=warm_matrix,
+        headers=WARM_FIELDS,
+        show_x_scrollbar=True,
+        show_y_scrollbar=True
+    )
+    warm_sheet.enable_bindings((
+        "single_select","row_select","column_select",
+        "drag_select","column_drag_and_drop","row_drag_and_drop",
+        "copy","cut","delete","undo","edit_cell","return_edit_cell",
+        "select_all","right_click_popup_menu",
+        "column_width_resize","column_resize","resize_columns"
+    ))
+    try:
+        warm_sheet.set_options(
+            expand_sheet_if_paste_too_big=True,
+            data_change_detected=True,
+            show_vertical_grid=True,
+            show_horizontal_grid=True,
+        )
+    except Exception:
+        pass
+    warm_sheet.pack(fill="both", expand=True)
+
+    for c, name in enumerate(WARM_FIELDS):
+        width = 120
+        if name in ("Company","Prospect Name"): width = 180
+        if name in ("Phone #","Rep","Samples?"): width = 90
+        if name in ("Email","Google Reviews","Industry","Location"): width = 160
+        if name.endswith("Date"): width = 110
+        if name == "Timestamp": width = 150
+        try: warm_sheet.column_width(c, width=width)
+        except Exception: pass
+
+    _bind_plaintext_paste_for_tksheet(warm_sheet, window.TKroot)
+    _ensure_rc_menu_plain_paste(warm_sheet, window.TKroot)
+    _enable_column_resizing(warm_sheet)
+
+    # ---------- Customers grid (tksheet) ----------
+    cust_host_tk = customers_host.Widget
+    for child in cust_host_tk.winfo_children():
+        try: child.destroy()
+        except Exception: pass
+    cust_holder = sg.tk.Frame(cust_host_tk, bg="#111111")
+    cust_holder.pack(side="top", fill="both", expand=True)
+
+    customers_matrix = []
+    try:
+        with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+            rdr = csv.DictReader(f)
+            for r in rdr:
+                customers_matrix.append([r.get(h, "") for h in CUSTOMER_FIELDS])
+    except Exception:
+        customers_matrix = []
+    if len(customers_matrix) < 50:
+        customers_matrix += [[""] * len(CUSTOMER_FIELDS) for _ in range(50 - len(customers_matrix))]
+
+    try:
+        from tksheet import Sheet as CustomerSheet
+    except Exception:
+        popup_error("tksheet not installed. Run: pip install tksheet")
+        return
+
+    customer_sheet = CustomerSheet(
+        cust_holder,
+        data=customers_matrix,
+        headers=CUSTOMER_FIELDS,
+        show_x_scrollbar=True,
+        show_y_scrollbar=True
+    )
+    customer_sheet.enable_bindings((
+        "single_select","row_select","column_select",
+        "drag_select","column_drag_and_drop","row_drag_and_drop",
+        "copy","cut","delete","undo","edit_cell","return_edit_cell",
+        "select_all","right_click_popup_menu",
+        "column_width_resize","column_resize","resize_columns"
+    ))
+    try:
+        customer_sheet.set_options(
+            expand_sheet_if_paste_too_big=True,
+            data_change_detected=True,
+            show_vertical_grid=True,
+            show_horizontal_grid=True,
+        )
+    except Exception:
+        pass
+    customer_sheet.pack(fill="both", expand=True)
+
+    for c, name in enumerate(CUSTOMER_FIELDS):
+        width = 120
+        if name in ("Company","Prospect Name"): width = 180
+        if name in ("Phone #","Rep","Samples?"): width = 90
+        if name in ("Email","Google Reviews","Industry","Location"): width = 160
+        if name in ("Opening Order $","Customer Since","Timestamp"): width = 150
+        try: customer_sheet.column_width(c, width=width)
+        except Exception: pass
+
+    _bind_plaintext_paste_for_tksheet(customer_sheet, window.TKroot)
+    _ensure_rc_menu_plain_paste(customer_sheet, window.TKroot)
+    _enable_column_resizing(customer_sheet)
+
+    # ---------- Handoff to Part 2 event loop ----------
+    try:
+        main_after_mount(
+            window=window,
+            sheet=sheet,
+            dial_sheet=dial_sheet,
+            leads_host=leads_host,
+            dialer_host=dialer_host,
+            templates=templates,
+            subjects=subjects,
+            mapping=mapping,
+            warm_sheet=warm_sheet,
+            customer_sheet=customer_sheet,
+        )
+    finally:
+        try:
+            window.close()
+        except Exception:
+            pass
+    print(">>> EXITING main()")
+
+
 # ============================================================
 # CSV I/O
 # ============================================================
@@ -955,6 +1164,36 @@ def save_matrix_to_csv(matrix):
         w.writerow(HEADER_FIELDS)
         for row in matrix:
             w.writerow((row + [""] * len(HEADER_FIELDS))[:len(HEADER_FIELDS)])
+
+# ---- Safe write helpers for Warm Leads / Customers ----
+BACKUP_DIR = APP_DIR / "_backups"
+
+def _ts():
+    from datetime import datetime as _dt
+    return _dt.now().strftime("%Y%m%d-%H%M%S")
+
+def _backup(path: Path):
+    """Best-effort backup (binary copy) to APP_DIR/_backups with timestamp."""
+    try:
+        if path.exists() and path.is_file():
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            bak = BACKUP_DIR / f"{path.stem}.{_ts()}{path.suffix}.bak"
+            with path.open("rb") as s, bak.open("wb") as d:
+                d.write(s.read())
+    except Exception:
+        # Silent — backup failing should not block a save
+        pass
+
+def _atomic_write_csv(path: Path, headers: list, rows: list):
+    """Write CSV to a temporary file, then replace target atomically."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(headers)
+        for row in rows:
+            out = (list(row) + [""] * len(headers))[:len(headers)]
+            w.writerow(out)
+    tmp.replace(path)
 
 # ============================================================
 # Utilities (placeholders, keys, fingerprints)
@@ -1120,7 +1359,7 @@ def load_state_set():
     return {line.strip() for line in STATE_PATH.read_text(encoding="utf-8").splitlines() if line.strip()}
 
 def load_results_rows_sorted():
-    # (Already defined in Part 2, but ensure available if file concatenation changes)
+    # (Defined in Part 1 too; kept here defensively)
     rows = []
     if RESULTS_PATH.exists():
         with RESULTS_PATH.open("r", encoding="utf-8", newline="") as f:
@@ -1183,7 +1422,7 @@ def outlook_sync_results(lookback_days=60):
 # ============================================================
 
 def _series_from_rows(rows, ts_field, start_dt, end_dt, groupby, filt=lambda r: True):
-    # (Already defined in Part 2 — redefine defensively for completeness)
+    # (Already defined in Part 1 — redefine defensively for completeness)
     buckets = {}
     for r in rows:
         if not filt(r):
@@ -1199,8 +1438,8 @@ def _series_from_rows(rows, ts_field, start_dt, end_dt, groupby, filt=lambda r: 
     values = [buckets[k] for k in labels]
     return labels, values
 
-def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping):
-    # ---------- helpers inside main() ----------
+def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
+    # ---------- helpers ----------
 
     def matrix_from_sheet():
         raw = sheet.get_sheet_data() or []
@@ -1209,6 +1448,26 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             row = (list(row) + [""] * len(HEADER_FIELDS))[:len(HEADER_FIELDS)]
             trimmed.append([str(c) for c in row])
         while trimmed and not any(cell.strip() for cell in trimmed[-1]):
+            trimmed.pop()
+        return trimmed
+
+    def warm_matrix_from_sheet():
+        raw = warm_sheet.get_sheet_data() or []
+        trimmed = []
+        for row in raw:
+            row = (list(row) + [""] * len(WARM_FIELDS))[:len(WARM_FIELDS)]
+            trimmed.append([str(c) for c in row])
+        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
+            trimmed.pop()
+        return trimmed
+
+    def customers_matrix_from_sheet():
+        raw = customer_sheet.get_sheet_data() or []
+        trimmed = []
+        for row in raw:
+            row = (list(row) + [""] * len(CUSTOMER_FIELDS))[:len(CUSTOMER_FIELDS)]
+            trimmed.append([str(c) for c in row])
+        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
             trimmed.pop()
         return trimmed
 
@@ -1236,7 +1495,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         window["-WARM-"].update(str(warm))
         window["-REPLRATE-"].update(f"{total_replied} / {total_sent}")
 
-    # Prime initial UI states
+    # Prime initial states
     refresh_fire_state()
     refresh_results_metrics()
 
@@ -1605,26 +1864,178 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         window["-DIAL_MSG-"].update(f"Save error: {e}")
 
         # ----- Warm tab events -----
+        elif event == "-WARM_SAVE-":
+            try:
+                matrix = warm_matrix_from_sheet()
+                _backup(WARM_LEADS_PATH)
+                _atomic_write_csv(WARM_LEADS_PATH, WARM_FIELDS, matrix)
+                window["-WARM_STATUS-"].update("Saved ✓")
+            except Exception as e:
+                window["-WARM_STATUS-"].update(f"Save error: {e}")
+
         elif event == "-WARM_EXPORT-":
             path = sg.popup_get_file("Save warm_leads.csv", save_as=True, default_extension=".csv",
                                      file_types=(("CSV","*.csv"),), no_window=True)
             if path:
                 try:
-                    with WARM_LEADS_PATH.open("r", encoding="utf-8") as src, open(path,"w",encoding="utf-8") as dst:
-                        dst.write(src.read())
+                    matrix = warm_matrix_from_sheet()
+                    with open(path, "w", encoding="utf-8", newline="") as f:
+                        w = csv.writer(f)
+                        w.writerow(WARM_FIELDS)
+                        for row in matrix:
+                            w.writerow((row + [""] * len(WARM_FIELDS))[:len(WARM_FIELDS)])
                     window["-WARM_STATUS-"].update("Exported ✓")
                 except Exception as e:
                     window["-WARM_STATUS-"].update(f"Export error: {e}")
 
         elif event == "-WARM_RELOAD-":
-            ensure_warm_file()
-            warm_rows = []
-            with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
-                rdr = csv.DictReader(f)
-                for r in rdr: warm_rows.append(r)
-            warm_table_data = [[r.get(h, "") for h in WARM_FIELDS] for r in warm_rows]
-            window["-WARM_TABLE-"].update(values=warm_table_data)
-            window["-WARM_STATUS-"].update("Reloaded ✓")
+            try:
+                ensure_warm_file()
+                rows = []
+                with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
+                    rdr = csv.DictReader(f)
+                    for r in rdr: rows.append([r.get(h, "") for h in WARM_FIELDS])
+                if len(rows) < 100:
+                    rows += [[""] * len(WARM_FIELDS) for _ in range(100 - len(rows))]
+                warm_sheet.set_sheet_data(rows)
+                warm_sheet.refresh()
+                window["-WARM_STATUS-"].update("Reloaded ✓")
+            except Exception as e:
+                window["-WARM_STATUS-"].update(f"Reload error: {e}")
+
+        elif event == "-WARM_MARK_CUSTOMER-":
+            # Promote selected Warm row to a Customer (asks for Opening Order $)
+            try:
+                sel_rows = warm_sheet.get_selected_rows() or []
+            except Exception:
+                sel_rows = []
+            if not sel_rows:
+                window["-WARM_STATUS-"].update("Pick a row in the Warm grid first.")
+                continue
+
+            r_idx = sel_rows[0]
+            row = warm_sheet.get_row_data(r_idx) or []
+            warm_row = { WARM_FIELDS[i]: (row[i] if i < len(WARM_FIELDS) else "") for i in range(len(WARM_FIELDS)) }
+
+            yn = sg.popup_yes_no("Mark this Warm Lead as a NEW CUSTOMER?\n\nYou’ll be asked for the Opening Order $ next.")
+            if yn != "Yes":
+                window["-WARM_STATUS-"].update("Canceled.")
+                continue
+
+            amt = sg.popup_get_text("Opening Order $ (numbers only, e.g. 1500 or 1500.00):", default_text="")
+            if amt is None:
+                window["-WARM_STATUS-"].update("Canceled.")
+                continue
+            amt = (amt or "").strip().replace(",", "")
+            try:
+                float_amt = float(amt)
+                amt = f"{float_amt:.2f}"
+            except Exception:
+                window["-WARM_STATUS-"].update("Invalid amount. Use numbers only, e.g. 1500 or 1500.00")
+                continue
+
+            # Build a CUSTOMER row (uses fields you defined in Part 1: CUSTOMER_FIELDS)
+            cust = {h:"" for h in CUSTOMER_FIELDS}
+            cust["Company"]        = warm_row.get("Company","")
+            cust["Prospect Name"]  = warm_row.get("Prospect Name","")
+            cust["Phone #"]        = warm_row.get("Phone #","")
+            cust["Email"]          = warm_row.get("Email","")
+            cust["Location"]       = warm_row.get("Location","")
+            cust["Industry"]       = warm_row.get("Industry","")
+            cust["Google Reviews"] = warm_row.get("Google Reviews","")
+            cust["Rep"]            = warm_row.get("Rep","")
+            cust["Samples?"]       = warm_row.get("Samples?","")
+            cust["Timestamp"]      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # The following fields must exist in CUSTOMER_FIELDS (Part 1):
+            # e.g. "Opening Order $","Customer Since","Notes"
+            if "Opening Order $" in CUSTOMER_FIELDS:
+                cust["Opening Order $"] = amt
+            if "Customer Since" in CUSTOMER_FIELDS:
+                cust["Customer Since"] = datetime.now().strftime("%Y-%m-%d")
+            if "Notes" in CUSTOMER_FIELDS:
+                # carry first notes if present
+                cust["Notes"] = warm_row.get("Call 1 Notes","")
+
+            # Append to customers.csv and update grid
+            try:
+                # read existing
+                existing = []
+                if CUSTOMERS_PATH.exists():
+                    with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                        rdr = csv.DictReader(f)
+                        for r in rdr:
+                            existing.append([r.get(h,"") for h in CUSTOMER_FIELDS])
+                # add new
+                existing.append([cust.get(h,"") for h in CUSTOMER_FIELDS])
+                _backup(CUSTOMERS_PATH)
+                _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, existing)
+
+                # refresh customer grid
+                grid = existing[:]
+                if len(grid) < 50:
+                    grid += [[""] * len(CUSTOMER_FIELDS) for _ in range(50 - len(grid))]
+                customer_sheet.set_sheet_data(grid)
+                customer_sheet.refresh()
+            except Exception as e:
+                window["-WARM_STATUS-"].update(f"Move error (customers): {e}")
+                continue
+
+            # Remove the warm row and persist warm file
+            try:
+                try:
+                    warm_sheet.delete_rows(r_idx, number_of_rows=1)
+                except Exception:
+                    warm_sheet.delete_rows(r_idx, amount=1)
+                warm_sheet.refresh()
+
+                new_matrix = warm_matrix_from_sheet()
+                _backup(WARM_LEADS_PATH)
+                _atomic_write_csv(WARM_LEADS_PATH, WARM_FIELDS, new_matrix)
+            except Exception as e:
+                window["-WARM_STATUS-"].update(f"Move warning (warm save): {e}")
+                continue
+
+            window["-WARM_STATUS-"].update("Promoted to Customer ✓")
+
+        # ----- Customers tab events -----
+        elif event == "-CUST_SAVE-":
+            try:
+                matrix = customers_matrix_from_sheet()
+                _backup(CUSTOMERS_PATH)
+                _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, matrix)
+                window["-CUST_STATUS-"].update("Saved ✓")
+            except Exception as e:
+                window["-CUST_STATUS-"].update(f"Save error: {e}")
+
+        elif event == "-CUST_EXPORT-":
+            path = sg.popup_get_file("Save customers.csv", save_as=True, default_extension=".csv",
+                                     file_types=(("CSV","*.csv"),), no_window=True)
+            if path:
+                try:
+                    matrix = customers_matrix_from_sheet()
+                    with open(path, "w", encoding="utf-8", newline="") as f:
+                        w = csv.writer(f)
+                        w.writerow(CUSTOMER_FIELDS)
+                        for row in matrix:
+                            w.writerow((row + [""] * len(CUSTOMER_FIELDS))[:len(CUSTOMER_FIELDS)])
+                    window["-CUST_STATUS-"].update("Exported ✓")
+                except Exception as e:
+                    window["-CUST_STATUS-"].update(f"Export error: {e}")
+
+        elif event == "-CUST_RELOAD-":
+            try:
+                rows = []
+                if CUSTOMERS_PATH.exists():
+                    with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                        rdr = csv.DictReader(f)
+                        for r in rdr: rows.append([r.get(h,"") for h in CUSTOMER_FIELDS])
+                if len(rows) < 50:
+                    rows += [[""] * len(CUSTOMER_FIELDS) for _ in range(50 - len(rows))]
+                customer_sheet.set_sheet_data(rows)
+                customer_sheet.refresh()
+                window["-CUST_STATUS-"].update("Reloaded ✓")
+            except Exception as e:
+                window["-CUST_STATUS-"].update(f"Reload error: {e}")
 
         # ----- Analytics presets & apply -----
         elif event == "-AN_PRESET_ALL-":
@@ -1671,7 +2082,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception as e:
                 window["-AN_STATUS-"].update(f"Error: {e}")
 
-        # ----- Updater button (placeholder; wire to GitHub later) -----
+        # ----- Updater button (placeholder) -----
         elif event == "-UPDATE-":
             sg.popup("Updater placeholder — when your GitHub repo/releases are ready, this button will pull the newest EXE.\n\nFor now, rebuild with PyInstaller and replace the EXE to update.")
 
@@ -1683,16 +2094,14 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 # ============================================================
 # Entry
 # ============================================================
-
 if __name__ == "__main__":
-    ensure_app_files()
-    # main() was defined in Part 3 and builds/mounts the UI and grids
-    # Recreate the same flow here to pass objects into the event loop wrapper
-
-    # We call main() once to set up the window and mount tksheet grids,
-    # but since main() contains that build already, simply call it.
-    # (If you prefer the explicit split, you could refactor; this preserves your structure.)
     try:
         main()
     except Exception as e:
-        popup_error(f"Fatal error starting app: {e}")
+        # Prefer a popup if PSG is alive; otherwise print traceback
+        try:
+            popup_error(f"Fatal error starting app: {e}")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            input("\n\n[ERROR] Press Enter to exit...")
