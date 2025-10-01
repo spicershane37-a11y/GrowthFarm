@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import PySimpleGUI as sg
 
+popup_error = getattr(sg, "popup_error", sg.popup)
+
 # Matplotlib headless for PySimpleGUI Image
 import matplotlib
 matplotlib.use("Agg")
@@ -439,7 +441,7 @@ def add_new_template_dialog():
                 name = keys[0].replace(" ","_").lower()
             res = {"keys": keys, "name": name, "subject": subj, "body": body}
         else:
-            sg.popup_error("Please provide industry keyword(s), subject, and body.")
+            popup_error("Please provide industry keyword(s), subject, and body.")
     win.close()
     return res
 
@@ -779,7 +781,7 @@ def main():
         from tksheet import Sheet as DialerSheet
         from tksheet import Sheet
     except Exception:
-        sg.popup_error("tksheet not installed. Run: pip install tksheet")
+        popup_error("tksheet not installed. Run: pip install tksheet")
         return
 
     # Email Leads sheet in leads_host
@@ -1318,7 +1320,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             try:
                 os.startfile(str(APP_DIR))
             except Exception as e:
-                sg.popup_error(f"Open folder error: {e}")
+                popup_error(f"Open folder error: {e}")
 
         elif event == "-ADDROWS-":
             try:
@@ -1327,7 +1329,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 try:
                     sheet.insert_rows(sheet.get_total_rows(), amount=10); sheet.refresh()
                 except Exception as e:
-                    sg.popup_error(f"Could not add rows: {e}")
+                    popup_error(f"Could not add rows: {e}")
             refresh_fire_state()
 
         elif event == "-DELROWS-":
@@ -1339,7 +1341,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         except Exception: sheet.delete_rows(r, amount=1)
                     sheet.refresh()
             except Exception as e:
-                sg.popup_error(f"Could not delete rows: {e}")
+                popup_error(f"Could not delete rows: {e}")
             refresh_fire_state()
 
         elif event == "-SAVECSV-":
@@ -1658,4 +1660,4 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        sg.popup_error(f"Fatal error starting app: {e}")
+        popup_error(f"Fatal error starting app: {e}")
