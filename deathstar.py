@@ -36,6 +36,11 @@ HEADER_FIELDS = [
     "Address","City","State","Reviews","Website"
 ]
 
+WARM_FIELDS = [
+    "Timestamp","Email","First Name","Last Name","Company","Industry",
+    "Phone","City","State","Website","Note","Source"
+]
+
 # -------------------- UI tuning -----------------------------
 START_ROWS = 200
 DEFAULT_COL_WIDTH = 140
@@ -187,13 +192,28 @@ def ensure_dialer_files():
             ])
 
 def ensure_warm_file():
+    WARM_LEADS_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not WARM_LEADS_PATH.exists():
         with WARM_LEADS_PATH.open("w", encoding="utf-8", newline="") as f:
-            w = csv.writer(f)
-            w.writerow([
-                "Timestamp","Email","First Name","Last Name","Company","Industry",
-                "Phone","City","State","Website","Note","Source"
-            ])
+            csv.writer(f).writerow(WARM_FIELDS)
+        return
+
+    needs_rewrite = False
+    rows = []
+
+    with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
+        rdr = csv.DictReader(f)
+        existing_fields = rdr.fieldnames or []
+        if existing_fields != WARM_FIELDS:
+            needs_rewrite = True
+        rows = list(rdr) if rdr.fieldnames else []
+
+    if needs_rewrite:
+        with WARM_LEADS_PATH.open("w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=WARM_FIELDS)
+            w.writeheader()
+            for row in rows:
+                w.writerow({h: row.get(h, "") for h in WARM_FIELDS})
 
 def ensure_no_interest_file():
     if not NO_INTEREST_PATH.exists():
@@ -695,9 +715,6 @@ def main():
 
     # -------- Warm Leads tab --------
     ensure_warm_file()
-    warm_headers = ["Timestamp","Email","First Name","Last Name","Company","Industry",
-                    "Phone","City","State","Website","Note","Source"]
-
     warm_rows = []
     if WARM_LEADS_PATH.exists():
         with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
@@ -705,15 +722,11 @@ def main():
             for r in rdr:
                 warm_rows.append(r)
 
-    warm_table_data = [[
-        r.get("Timestamp",""), r.get("Email",""), r.get("First Name",""), r.get("Last Name",""),
-        r.get("Company",""), r.get("Industry",""), r.get("Phone",""), r.get("City",""),
-        r.get("State",""), r.get("Website",""), r.get("Note",""), r.get("Source","")
-    ] for r in warm_rows]
+    warm_table_data = [[r.get(h, "") for h in WARM_FIELDS] for r in warm_rows]
 
     warm_tab = [
         [sg.Text("Live from warm_leads.csv", text_color="#CCCCCC")],
-        [sg.Table(values=warm_table_data, headings=warm_headers,
+        [sg.Table(values=warm_table_data, headings=WARM_FIELDS,
                   auto_size_columns=False, col_widths=[18,26,12,12,22,14,14,14,8,26,28,12],
                   key="-WARM_TABLE-", num_rows=14, alternating_row_color="#2a2a2a",
                   text_color="#EEE", background_color="#111",
@@ -1581,11 +1594,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
                 rdr = csv.DictReader(f)
                 for r in rdr: warm_rows.append(r)
-            warm_table_data = [[
-                r.get("Timestamp",""), r.get("Email",""), r.get("First Name",""), r.get("Last Name",""),
-                r.get("Company",""), r.get("Industry",""), r.get("Phone",""), r.get("City",""),
-                r.get("State",""), r.get("Website",""), r.get("Note",""), r.get("Source","")
-            ] for r in warm_rows]
+            warm_table_data = [[r.get(h, "") for h in WARM_FIELDS] for r in warm_rows]
             window["-WARM_TABLE-"].update(values=warm_table_data)
             window["-WARM_STATUS-"].update("Reloaded ✓")
 
