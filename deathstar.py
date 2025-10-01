@@ -8,7 +8,18 @@ from pathlib import Path
 import PySimpleGUI as sg
 
 set_theme = getattr(sg, "theme", getattr(sg, "ChangeLookAndFeel", None))
-popup_error = getattr(sg, "popup_error", sg.popup)
+
+
+def _resolve_popup_error():
+    for attr_name in ("popup_error", "PopupError", "popup", "Popup"):
+        if hasattr(sg, attr_name):
+            return getattr(sg, attr_name)
+    return lambda *a, **k: None
+
+
+popup_error = _resolve_popup_error()
+if not hasattr(sg, "popup_error"):
+    setattr(sg, "popup_error", popup_error)  # legacy compatibility: normalize popup helper across PySimpleGUI versions
 
 # Matplotlib headless for PySimpleGUI Image
 import matplotlib
