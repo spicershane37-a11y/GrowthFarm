@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import PySimpleGUI as sg
 
+set_theme = getattr(sg, "theme", getattr(sg, "ChangeLookAndFeel", None))
 popup_error = getattr(sg, "popup_error", sg.popup)
 
 # Matplotlib headless for PySimpleGUI Image
@@ -586,7 +587,21 @@ def _enable_column_resizing(sheet_obj):
 def main():
     ensure_app_files()
     templates, subjects, mapping = load_templates_ini()
-    sg.theme("DarkGrey13")
+
+    theme_applied = False
+    if callable(set_theme):
+        try:
+            set_theme("DarkGrey13")
+            theme_applied = True
+        except Exception:
+            theme_applied = False
+    if not theme_applied:
+        fallback_theme = getattr(sg, "SetOptions", None)
+        if callable(fallback_theme):
+            try:
+                fallback_theme(background_color="#1B1B1B", text_color="#FFFFFF")
+            except Exception:
+                pass
 
     # ---------------- Toolbar with Update button ----------------
     top_bar = [
