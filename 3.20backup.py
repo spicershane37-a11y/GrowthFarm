@@ -1,4 +1,4 @@
-# ===== CHUNK 1 / 4 — START =====
+# ===== CHUNK 1 / 5 — START =====
 # deathstar.py — The Death Star (GUI)
 # v2025-10-01 — Email + Dialer + Warm Leads + Plain Paste RC + Resizable Columns
 # Requires: PySimpleGUI, tksheet; (optional) pywin32 for Outlook
@@ -65,10 +65,15 @@ WARM_FIELDS = [
     "Call 13 Date","Call 13 Notes","Call 14 Date","Call 14 Notes"
 ]
 
-# Customers sheet headers (new schema)
+# Customers sheet headers (UPDATED schema to match UI + logic)
 CUSTOMER_FIELDS = [
-    "Company","Name","Phone","Industry",
+    # Identity / contact (to mirror Warm columns for promotion)
+    "Company","Prospect Name","Phone #","Email","Location","Industry",
+    "Google Reviews","Rep","Samples?","Timestamp",
+    # Commercial lifecycle
+    "Opening Order $","Customer Since",
     "First Order Date","Last Order Date","First Contact","Days To Close",
+    # Sales metrics
     "CLTV","Sku's Ordered","Notes","Reorder?","Days","Sales/Day","Notes 2"
 ]
 
@@ -471,8 +476,8 @@ def _enable_column_resizing(sheet_obj):
                     pass
         except Exception:
             pass
-# ===== CHUNK 1 / 4 — END =====
-# ===== CHUNK 2 / 4 — START =====
+# ===== CHUNK 1 / 5 — END =====
+# ===== CHUNK 2 / 5 — START =====
 # ============================================================
 # GUI
 # ============================================================
@@ -503,6 +508,48 @@ def main():
         sg.Push(),
         sg.Button("Update", key="-UPDATE-", button_color=("white","#444444"))
     ]
+
+    # ---- DAILY ACTIVITY SCOREBOARD (2 columns) ----
+    da_header = [[sg.Text("DAILY ACTIVITY TRACKER",
+                          text_color="#9EE493",
+                          font=("Segoe UI", 16, "bold"),
+                          justification="center",
+                          expand_x=True)]]
+    da_left = [
+        [sg.Text("CALLS:",          text_color="#CCCCCC"), sg.Text("0",     key="-DA_CALLS-",  text_color="#A0FFA0")],
+        [sg.Text("EMAILS:",         text_color="#CCCCCC"), sg.Text("0",     key="-DA_EMAILS-", text_color="#A0FFA0")],
+        [sg.Text("NEW WARM LEADS:", text_color="#CCCCCC"), sg.Text("0",     key="-DA_WARMS-",  text_color="#A0FFA0")],
+    ]
+    da_right = [
+        [sg.Text("NEW ACCOUNTS:",   text_color="#CCCCCC"), sg.Text("0",     key="-DA_NEWCUS-", text_color="#A0FFA0")],
+        [sg.Text("DAILY SALES:",    text_color="#CCCCCC"), sg.Text("$0.00", key="-DA_SALES-",  text_color="#A0FFA0")],
+    ]
+    daily_scoreboard = sg.Frame(
+        "",
+        da_header + [[sg.Column(da_left, pad=(6,6)), sg.Text("   "), sg.Column(da_right, pad=(6,6))]],
+        relief=sg.RELIEF_GROOVE, border_width=2,
+        background_color="#1B1B1B", title_color="#9EE493",
+        expand_x=False, expand_y=False
+    )
+
+    # ---- MONTHLY RESULTS SCOREBOARD (ONE COLUMN) ----
+    mo_header = [[sg.Text("MONTHLY RESULTS",
+                          text_color="#9EE493",
+                          font=("Segoe UI", 16, "bold"),
+                          justification="center",
+                          expand_x=True)]]
+    mo_col = [
+        [sg.Text("NEW WARM LEADS:", text_color="#CCCCCC"), sg.Text("0",     key="-MO_WARMS-",  text_color="#A0FFA0")],
+        [sg.Text("NEW CUSTOMERS:",  text_color="#CCCCCC"), sg.Text("0",     key="-MO_NEWCUS-", text_color="#A0FFA0")],
+        [sg.Text("TOTAL SALES:",    text_color="#CCCCCC"), sg.Text("$0.00", key="-MO_SALES-",  text_color="#A0FFA0")],
+    ]
+    monthly_scoreboard = sg.Frame(
+        "",
+        mo_header + [[sg.Column(mo_col, pad=(6,6))]],  # column layout (single column)
+        relief=sg.RELIEF_GROOVE, border_width=2,
+        background_color="#1B1B1B", title_color="#9EE493",
+        expand_x=False, expand_y=False
+    )
 
     # -------- Email Leads tab (host frame for tksheet) --------
     leads_host = sg.Frame(
@@ -545,12 +592,12 @@ def main():
         body_height = 8 if key in ("butcher_shop","farm_orchard") else 6
         tpl_rows += [
             [sg.Text(key, size=(18,1), text_color="#CCCCCC")],
-            [sg.Column([ [sg.Text("Subject", text_color="#9EE493")],
-                         [sg.Input(default_text=sub_val(key), key=f"-SUBJ_{key}-", size=(48,1), enable_events=True)] ], pad=(0,0)),
+            [sg.Column([[sg.Text("Subject", text_color="#9EE493")],
+                        [sg.Input(default_text=sub_val(key), key=f"-SUBJ_{key}-", size=(48,1), enable_events=True)]], pad=(0,0)),
              sg.Text("   "),
-             sg.Column([ [sg.Text("Body", text_color="#9EE493")],
-                         [sg.Multiline(default_text=tpl_val(key), key=f"-TPL_{key}-", size=(90, body_height),
-                                       font=("Consolas",10), text_color="#EEE", background_color="#111", enable_events=True)] ],
+             sg.Column([[sg.Text("Body", text_color="#9EE493")],
+                        [sg.Multiline(default_text=tpl_val(key), key=f"-TPL_{key}-", size=(90, body_height),
+                                      font=("Consolas",10), text_color="#EEE", background_color="#111", enable_events=True)]],
                        pad=(0,0), expand_x=True)]
         ]
 
@@ -675,7 +722,7 @@ def main():
          sg.Column(warm_controls_right, vertical_alignment="top", pad=((10,0),(0,0)))]
     ]
 
-    # -------- Customers tab (mirror Warm layout: grid left, slim panel right) --------
+    # -------- Customers tab (grid + analytics panel on right) --------
     if not CUSTOMERS_PATH.exists():
         with CUSTOMERS_PATH.open("w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(CUSTOMER_FIELDS)
@@ -696,20 +743,28 @@ def main():
         sg.Text("", key="-CUST_STATUS-", text_color="#A0FFA0")
     ]
 
-    # Analytics panel (fixed width, compact like Warm's right panel)
-    an_lines_top = [
-        [sg.Text("CUSTOMER ANALYTICS:", text_color="#9EE493")],
-        [sg.Text("Pipeline — Total Warm Leads:  "), sg.Text("0",    key="-AN_WARMS-",      text_color="#A0FFA0")],
-        [sg.Text("Pipeline — Total Samples Sent ($):  "), sg.Text("0.00", key="-AN_SAMPLES-",    text_color="#A0FFA0")],
-        [sg.Text("Pipeline — New Customers:  "), sg.Text("0",       key="-AN_NEWCUS-",     text_color="#A0FFA0")],
-        [sg.Text("Pipeline — Close Rate:  "), sg.Text("0%",         key="-AN_CLOSERATE-",  text_color="#A0FFA0")],
-        [sg.HorizontalSeparator(color="#4CAF50")],
-        [sg.Text("CAC (Samples ÷ New Customers):  "), sg.Text("0.00", key="-AN_CAC-",        text_color="#A0FFA0")],
-        [sg.Text("Average LTV (All Customers):  "),   sg.Text("0.00", key="-AN_AVGLTV-",     text_color="#A0FFA0")],
-        [sg.Text("Reorder Rate (All Customers):  "),  sg.Text("0%",   key="-AN_REORDER-",    text_color="#A0FFA0")],
+    # ---- Analytics panel (right side) ----
+    an_customer = [
+        [sg.Text("CUSTOMER ANALYTICS", text_color="#9EE493")],
+        [sg.Text("Total Sales"),  sg.Text("0.00", key="-AN_TOTALSALES-", text_color="#A0FFA0")],
+        [sg.Text("CAC"),          sg.Text("0.00", key="-AN_CAC-",        text_color="#A0FFA0")],
+        [sg.Text("LTV"),          sg.Text("0.00", key="-AN_LTV-",        text_color="#A0FFA0")],
+        [sg.Text("CAC : LTV"),    sg.Text("1 : 0", key="-AN_CACLTV-",    text_color="#A0FFA0")],
+        [sg.Text("Reorder Rate"), sg.Text("0%",   key="-AN_REORDER-",    text_color="#A0FFA0")],
     ]
+
+    an_pipeline = [
+        [sg.HorizontalSeparator(color="#4CAF50")],
+        [sg.Text("PIPELINE ANALYTICS", text_color="#9EE493")],
+        [sg.Text("Total Warm Leads"),  sg.Text("0",  key="-AN_WARMS-",     text_color="#A0FFA0")],
+        [sg.Text("New Customers"),     sg.Text("0",  key="-AN_NEWCUS-",    text_color="#A0FFA0")],
+        [sg.Text("Close Rate"),        sg.Text("0%", key="-AN_CLOSERATE-", text_color="#A0FFA0")],
+    ]
+
     analytics_panel = sg.Frame(
-        "", [[sg.Column(an_lines_top, pad=(6,6), expand_x=True, expand_y=False)]],
+        "",
+        [[sg.Column(an_customer, pad=(6,6), expand_x=True, expand_y=False)],
+         [sg.Column(an_pipeline, pad=(6,0), expand_x=True, expand_y=False)]],
         relief=sg.RELIEF_GROOVE, border_width=2,
         background_color="#1B1B1B", title_color="#9EE493",
         expand_x=False, expand_y=False
@@ -719,15 +774,16 @@ def main():
         [sg.Column([[customers_host],
                     [sg.Column([customers_buttons_under], pad=(0,0))]],
                    expand_x=True, expand_y=True),
-         sg.Column([[analytics_panel]],
-                   vertical_alignment="top",
-                   pad=((10,0),(0,0)),
-                   size=(320, 300))]  # ~Warm panel width
+         sg.Column([[analytics_panel]], vertical_alignment="top", pad=((10,0),(0,0)), size=(320, 340))]
     ]
 
     # -------- Compose full layout --------
+    # Scoreboards row is GLOBAL (above tabs). Push() keeps them docked right.
+    scoreboards_row = [sg.Push(), daily_scoreboard, sg.Text("  "), monthly_scoreboard]
+
     layout = [
         top_bar,
+        scoreboards_row,
         [sg.TabGroup([[sg.Tab("Email Leads",    leads_tab,   expand_x=True, expand_y=True),
                        sg.Tab("Email Templates",tpl_tab,     expand_x=True, expand_y=True),
                        sg.Tab("Email Results",  results_tab, expand_x=True, expand_y=True),
@@ -932,7 +988,7 @@ def main():
         if name in ("Phone #","Rep","Samples?"): width = 90
         if name in ("Email","Google Reviews","Industry","Location"): width = 160
         if name.endswith("Date"): width = 110
-        if name in ("Timestamp","Cost ($)"): width = 120
+        if name in ("First Contact","Timestamp","Cost ($)"): width = 120
         try: warm_sheet.column_width(c, width=width)
         except Exception: pass
 
@@ -945,7 +1001,7 @@ def main():
     for child in cust_host_tk.winfo_children():
         try: child.destroy()
         except Exception: pass
-    cust_holder = sg.tk.Frame(cust_host_tk, bg="#111111")
+    cust_holder = sg.tk.Frame(customers_host.Widget, bg="#111111")
     cust_holder.pack(side="top", fill="both", expand=True)
 
     customers_matrix = []
@@ -1023,8 +1079,8 @@ def main():
         except Exception:
             pass
     print(">>> EXITING main()")
-# ===== CHUNK 2 / 4 — END =====
-# ===== CHUNK 3 / 4 — START =====
+# ===== CHUNK 2 / 5 — END =====
+# ===== CHUNK 3 / 5 — START =====
 # ============================================================
 # CSV I/O
 # ============================================================
@@ -1173,11 +1229,35 @@ def save_dialer_leads_matrix(matrix):
 # ============================================================
 
 def ensure_customers_file():
-    """Ensure customers.csv exists with the new schema."""
+    """
+    Ensure customers.csv exists with the UPDATED schema.
+    If it exists but headers differ, migrate by mapping any matching columns by name.
+    """
     if not CUSTOMERS_PATH.exists():
         _backup(CUSTOMERS_PATH)
         with CUSTOMERS_PATH.open("w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(CUSTOMER_FIELDS)
+        return
+
+    # If exists, check header and migrate if needed
+    try:
+        with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+            rdr = csv.DictReader(f)
+            old_fields = rdr.fieldnames or []
+            if old_fields != CUSTOMER_FIELDS:
+                rows = list(rdr)  # read existing
+            else:
+                rows = None
+    except Exception:
+        rows = None
+
+    if rows is not None:
+        # Build migrated matrix aligned to CUSTOMER_FIELDS
+        migrated = []
+        for r in rows:
+            migrated.append([r.get(h, "") for h in CUSTOMER_FIELDS])
+        _backup(CUSTOMERS_PATH)
+        _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, migrated)
 
 def load_customers_matrix():
     """Load customers.csv into a matrix matching CUSTOMER_FIELDS."""
@@ -1676,14 +1756,230 @@ def warm_format_cost(val):
         return f"{float(s):.2f}"
     except Exception:
         return s  # leave as-is if non-numeric
-# ===== CHUNK 3 / 4 — END =====
-# ===== CHUNK 4 / 4 — START =====
+# ===== CHUNK 3 / 5 — END =====
+# ===== CHUNK 4 / 5 — START =====
 # ============================================================
-# main_after_mount
+# Shared helpers (no hard dependency on live tksheet objects)
 # ============================================================
+from datetime import datetime as _dt
 
+# --- Sentinels to prevent NameError at import time ---
+try:
+    sheet
+except NameError:
+    sheet = None
+try:
+    dial_sheet
+except NameError:
+    dial_sheet = None
+try:
+    warm_sheet
+except NameError:
+    warm_sheet = None
+try:
+    customer_sheet
+except NameError:
+    customer_sheet = None
+# ----------------------------------------------------
+
+# File used to display "Email data last synced" in the Daily Activity view
+LAST_SYNC_PATH = APP_DIR / "last_outlook_sync.txt"
+
+def _today_date():
+    return _dt.now().date()
+
+def _fmt_money(x):
+    try:
+        return f"{float(x):.2f}"
+    except Exception:
+        return "0.00"
+
+def _parse_any_datetime(s):
+    """Best-effort parse across formats used in results, dialer, warm, orders."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    fmts = [
+        "%Y-%m-%d %H:%M:%S",     # our own writes
+        "%Y-%m-%d",              # ISO date
+        "%m/%d/%Y %I:%M:%S %p",  # Outlook strings
+        "%m/%d/%Y %I:%M %p",     # Outlook alt (no seconds)
+        "%m/%d/%Y",              # date only
+    ]
+    for fmt in fmts:
+        try:
+            return _dt.strptime(s, fmt)
+        except Exception:
+            pass
+    alt = s.replace("-", "/")
+    if alt != s:
+        for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%m/%d/%Y"):
+            try:
+                return _dt.strptime(alt, fmt)
+            except Exception:
+                pass
+    return None
+
+def _read_last_sync_str():
+    try:
+        if LAST_SYNC_PATH.exists():
+            return LAST_SYNC_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return "—"
+
+# ============================================================
+# Daily Activity computation (reads CSVs only)
+# ============================================================
+def compute_daily_activity(target_date=None):
+    """Return dict with metrics for the given date (default: today)."""
+    d = target_date or _today_date()
+
+    # Calls (dialer_results.csv)
+    calls_total = calls_green = calls_gray = calls_red = 0
+    try:
+        if DIALER_RESULTS_PATH.exists():
+            with DIALER_RESULTS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    ts = _parse_any_datetime(r.get("Timestamp",""))
+                    if ts and ts.date() == d:
+                        calls_total += 1
+                        oc = (r.get("Outcome","") or "").strip().lower()
+                        if oc == "green": calls_green += 1
+                        elif oc == "gray": calls_gray += 1
+                        elif oc == "red":  calls_red  += 1
+    except Exception:
+        pass
+
+    # Emails sent (results.csv) — depends on last Outlook sync
+    emails_sent = 0
+    try:
+        if RESULTS_PATH.exists():
+            with RESULTS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    ds = _parse_any_datetime(r.get("DateSent",""))
+                    if ds and ds.date() == d:
+                        emails_sent += 1
+    except Exception:
+        pass
+
+    # New Warm Leads (warm_leads.csv): prefer 'First Contact', else legacy 'Timestamp'
+    new_warm = 0
+    try:
+        if WARM_LEADS_PATH.exists():
+            with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                fc_field = "First Contact" if "First Contact" in (rdr.fieldnames or []) else "Timestamp"
+                for r in rdr:
+                    fc_val = r.get(fc_field, "")
+                    dt = _parse_any_datetime(fc_val)
+                    if dt and dt.date() == d:
+                        new_warm += 1
+    except Exception:
+        pass
+
+    # New Accounts (customers.csv): Customer Since OR First Order Date
+    new_accounts = 0
+    try:
+        if CUSTOMERS_PATH.exists():
+            with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    cs = (r.get("Customer Since","") or "").strip()
+                    fo = (r.get("First Order Date","") or "").strip()
+                    ok = False
+                    if cs:
+                        dt = _parse_any_datetime(cs)
+                        ok = (dt and dt.date() == d)
+                    if not ok and fo:
+                        dt = _parse_any_datetime(fo)
+                        ok = (dt and dt.date() == d)
+                    if ok:
+                        new_accounts += 1
+    except Exception:
+        pass
+
+    # Daily Sales (orders.csv) — sum + count
+    orders_count = 0
+    sales_sum = 0.0
+    try:
+        ensure_orders_file()
+        if ORDERS_PATH.exists():
+            with ORDERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    od = _parse_any_datetime(r.get("Order Date",""))
+                    if od and od.date() == d:
+                        orders_count += 1
+                        try:
+                            sales_sum += float(str(r.get("Amount","") or "0").replace(",",""))
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
+    return {
+        "date": d.strftime("%Y-%m-%d"),
+        "calls_total": calls_total,
+        "calls_green": calls_green,
+        "calls_gray": calls_gray,
+        "calls_red":  calls_red,
+        "emails_sent": emails_sent,
+        "new_warm": new_warm,
+        "new_accounts": new_accounts,
+        "orders_count": orders_count,
+        "sales_sum": sales_sum,
+        "last_sync": _read_last_sync_str(),
+    }
+
+# ============================================================
+# Daily Activity popup (pure UI)
+# ============================================================
+def show_daily_activity_popup():
+    m = compute_daily_activity()
+    header = f"Daily Activity — {m['date']}"
+    layout = [
+        [sg.Text(header, text_color="#9EE493", font=("Segoe UI", 12, "bold")),
+         sg.Push(),
+         sg.Text("Email data last synced:", text_color="#CCCCCC"),
+         sg.Text(m["last_sync"], key="-DA_LASTSYNC-", text_color="#FFFFFF")],
+        [sg.HorizontalSeparator(color="#4CAF50")],
+        [sg.Column([
+            [sg.Text("Daily Calls:", size=(16,1), text_color="#CCCCCC"),
+             sg.Text(f"{m['calls_total']}  (🟢 {m['calls_green']}  ⚪ {m['calls_gray']}  🔴 {m['calls_red']})", key="-DA_CALLS-", text_color="#FFFFFF")],
+            [sg.Text("Daily Emails:", size=(16,1), text_color="#CCCCCC"),
+             sg.Text(str(m["emails_sent"]), key="-DA_EMAILS-", text_color="#FFFFFF")],
+            [sg.Text("New Warm Leads:", size=(16,1), text_color="#CCCCCC"),
+             sg.Text(str(m["new_warm"]), key="-DA_NEWWARM-", text_color="#FFFFFF")],
+            [sg.Text("New Accounts:", size=(16,1), text_color="#CCCCCC"),
+             sg.Text(str(m["new_accounts"]), key="-DA_NEWACCTS-", text_color="#FFFFFF")],
+            [sg.Text("Daily Sales:", size=(16,1), text_color="#CCCCCC"),
+             sg.Text(f"${_fmt_money(m['sales_sum'])}  ({m['orders_count']} orders)", key="-DA_SALES-", text_color="#A0FFA0")],
+        ], pad=(0,0), expand_x=True)],
+        [sg.Push(), sg.Button("Refresh", key="-DA_REFRESH-"), sg.Button("Close", key="-DA_CLOSE-")]
+    ]
+    win = sg.Window("Daily Activity", layout, modal=True, keep_on_top=True, finalize=True)
+    while True:
+        ev, _vals = win.read(timeout=60000)
+        if ev in (sg.WINDOW_CLOSE_ATTEMPTED_EVENT, sg.WIN_CLOSED, "-DA_CLOSE-"):
+            break
+        if ev == "-DA_REFRESH-":
+            mm = compute_daily_activity()
+            win["-DA_LASTSYNC-"].update(mm["last_sync"])
+            win["-DA_CALLS-"].update(f"{mm['calls_total']}  (🟢 {mm['calls_green']}  ⚪ {mm['calls_gray']}  🔴 {mm['calls_red']})")
+            win["-DA_EMAILS-"].update(str(mm["emails_sent"]))
+            win["-DA_NEWWARM-"].update(str(mm["new_warm"]))
+            win["-DA_NEWACCTS-"].update(str(mm["new_accounts"]))
+            win["-DA_SALES-"].update(f"${_fmt_money(mm['sales_sum'])}  ({mm['orders_count']} orders)")
+    win.close()
+
+# ============================================================
+# main_after_mount (part 1: helpers & analytics)
+# ============================================================
 def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
-    # ---------- extractors ----------
+    # ---------- extractors tied to the live sheets ----------
     def matrix_from_sheet():
         raw = sheet.get_sheet_data() or []
         trimmed = []
@@ -1938,7 +2234,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         layout = [
             [sg.Text(f"Add Order for: {comp_disp}", text_color="#9EE493")],
             [sg.Text("Amount ($):", size=(12,1)), sg.Input(key="-AO_AMOUNT-", size=(20,1))],
-            [sg.Text("Order Date:", size=(12,1)), sg.Input(datetime.now().strftime("%Y-%m-%d"), key="-AO_DATE-", size=(20,1)),
+            [sg.Text("Order Date:", size=(12,1)), sg.Input(_dt.now().strftime("%Y-%m-%d"), key="-AO_DATE-", size=(20,1)),
              sg.Text(" (YYYY-MM-DD or MM/DD/YYYY)", text_color="#AAAAAA")],
             [sg.Push(), sg.Button("Cancel"), sg.Button("Add", button_color=("white","#2E7D32"))]
         ]
@@ -1966,23 +2262,24 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         except Exception:
             pass
 
-    def _orders_count_by_company():
-        """Return {company: (count, total_amount)} from orders.csv."""
+    def _orders_count_and_sum():
+        """Return (counts_by_company: {company:(count,sum)}, total_sales_sum)."""
         counts = {}
+        total_sales = 0.0
         if ORDERS_PATH.exists():
             with ORDERS_PATH.open("r", encoding="utf-8", newline="") as f:
                 rdr = csv.DictReader(f)
                 for r in rdr:
                     comp = (r.get("Company","") or "").strip()
-                    amt = r.get("Amount","") or ""
                     try:
-                        val = float(str(amt).replace(",","").strip() or "0")
+                        val = float(str(r.get("Amount","") or "0").replace(",","").strip() or "0")
                     except Exception:
                         val = 0.0
+                    total_sales += val
                     if comp:
                         c, s = counts.get(comp, (0, 0.0))
                         counts[comp] = (c+1, s+val)
-        return counts
+        return counts, total_sales
 
     def refresh_customer_analytics():
         """
@@ -1993,6 +2290,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         - Close rate: new_customers / warm_leads
         - CAC: samples_sum / max(1, new_customers)
         - Avg LTV: average 'CLTV' across all customers with a numeric value
+        - Total Sales: sum of all orders in orders.csv
+        - CAC : LTV ratio shown as "<cac> : <avg_ltv>"
         - Reorder rate: percent customers with Reorder? == 'Yes' (case-insensitive)
         - Also auto-mark Reorder? to 'Yes' if orders count for company >= 2
         """
@@ -2020,7 +2319,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         ltv_vals = []
         reorder_yes = 0
 
-        orders_counts = _orders_count_by_company()
+        orders_counts, total_sales_sum = _orders_count_and_sum()
 
         # optionally mutate grid for Reorder? auto-update (>=2 orders)
         idx_reorder = _cust_idx("Reorder?")
@@ -2046,7 +2345,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         disk_changed = False
 
         for r_idx, row in enumerate(rows):
-            # Compose row dict by headers
             rec = {CUSTOMER_FIELDS[i]: (row[i] if i < len(CUSTOMER_FIELDS) else "") for i in range(len(CUSTOMER_FIELDS))}
             comp = (rec.get("Company","") or "").strip()
             if not any((rec.get(h,"") or "").strip() for h in CUSTOMER_FIELDS):
@@ -2062,10 +2360,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception:
                 pass
             # Reorder? (explicit)
-            if (rec.get("Reorder?","") or "").strip().lower() == "yes":
-                is_yes_now = True
-            else:
-                is_yes_now = False
+            is_yes_now = (rec.get("Reorder?","") or "").strip().lower() == "yes"
 
             # Auto YES if orders >= 2
             oc = orders_counts.get(comp, (0, 0.0))[0] if comp else 0
@@ -2095,23 +2390,630 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception:
                 pass
 
-        # Compute metrics
+        # Compute metrics for UI keys from Chunk 2
         close_rate = (new_customers / warm_leads * 100.0) if warm_leads else 0.0
         cac = (samples_sum / new_customers) if new_customers else 0.0
         avg_ltv = (sum(ltv_vals) / len(ltv_vals)) if ltv_vals else 0.0
         reorder_rate = (reorder_yes / total_customers * 100.0) if total_customers else 0.0
 
-        # Update labels safely (these keys must match what we placed in CHUNK 2)
+        # Update labels safely (keys from Chunk 2)
         _safe_update("-AN_WARMS-", str(warm_leads))
-        _safe_update("-AN_SAMPLES-", f"{samples_sum:.2f}")
         _safe_update("-AN_NEWCUS-", str(new_customers))
         _safe_update("-AN_CLOSERATE-", f"{close_rate:.1f}%")
         _safe_update("-AN_CAC-", f"{cac:.2f}")
-        _safe_update("-AN_AVGLTV-", f"{avg_ltv:.2f}")
+        _safe_update("-AN_LTV-", f"{avg_ltv:.2f}")
+        # Total Sales sum across all orders
+        _safe_update("-AN_TOTALSALES-", f"{total_sales_sum:.2f}")
+        # CAC : LTV formatted as a ratio-esque string
+        if cac > 0 and avg_ltv > 0:
+            _safe_update("-AN_CACLTV-", f"{cac:.2f} : {avg_ltv:.2f}")
+        else:
+            _safe_update("-AN_CACLTV-", "—")
+        _safe_update("-AN_REORDER-", f"{reorder_rate:.1f}%")
+# ===== CHUNK 4 / 5 — END =====
+# ===== CHUNK 5 / 5 — START =====
+# ============================================================
+# main_after_mount (live-grid logic + event loop)
+# + Daily / Monthly Scoreboards (auto-refresh every 5s; no "last synced")
+# ============================================================
+
+# ---------- Scoreboard helpers ----------
+from datetime import datetime as _dt
+
+def _safe_get(window, key):
+    try:
+        return window[key]
+    except Exception:
+        return None
+
+def _fmt_money(val):
+    try:
+        return f"${float(val):.2f}"
+    except Exception:
+        return "$0.00"
+
+def _parse_any_date(s):
+    """Return date() from a wide range of formats or None."""
+    if not s:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+    s2 = s.replace(",", " ")
+    fmts = [
+        "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m-%d-%Y",
+        "%m/%d", "%m-%d",
+        "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %I:%M %p", "%m-%d-%Y %I:%M %p"
+    ]
+    for fmt in fmts:
+        try:
+            dt = _dt.strptime(s2, fmt)
+            if fmt in ("%m/%d", "%m-%d"):
+                dt = dt.replace(year=_dt.now().year)
+            return dt.date()
+        except Exception:
+            continue
+    try:
+        from dateutil import parser as _p  # optional
+        return _p.parse(s2).date()
+    except Exception:
+        return None
+
+def _file_rows(path):
+    """Yield DictReader rows from a CSV file if it exists."""
+    try:
+        if path.exists():
+            with path.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    yield r
+    except Exception:
+        return
+
+def _float_val(s):
+    try:
+        return float(str(s).replace("$","").replace(",","").strip() or "0")
+    except Exception:
+        return 0.0
+
+def compute_daily_metrics():
+    """Compute Daily Activity numbers from CSVs."""
+    today = _dt.now().date()
+
+    # Calls (dialer_results.csv)
+    calls = 0
+    for r in _file_rows(DIALER_RESULTS_PATH):
+        d = _parse_any_date(r.get("Timestamp",""))
+        if d == today:
+            calls += 1
+
+    # Emails sent today (results.csv -> DateSent)
+    emails = 0
+    for r in _file_rows(RESULTS_PATH):
+        d = _parse_any_date(r.get("DateSent",""))
+        if d == today:
+            emails += 1
+
+    # New warm leads today (prefer First Contact; fall back to Timestamp for older rows)
+    new_warm = 0
+    for r in _file_rows(WARM_LEADS_PATH):
+        d = _parse_any_date(r.get("First Contact","") or r.get("Timestamp",""))
+        if d == today:
+            new_warm += 1
+
+    # New accounts today (customers.csv -> Customer Since)
+    new_accounts = 0
+    for r in _file_rows(CUSTOMERS_PATH):
+        d = _parse_any_date(r.get("Customer Since",""))
+        if d == today:
+            new_accounts += 1
+
+    # Daily sales (orders.csv -> Order Date)
+    daily_sales = 0.0
+    for r in _file_rows(ORDERS_PATH):
+        d = _parse_any_date(r.get("Order Date",""))
+        if d == today:
+            daily_sales += _float_val(r.get("Amount",""))
+
+    return {
+        "calls": calls,
+        "emails": emails,
+        "new_warm": new_warm,
+        "new_accounts": new_accounts,
+        "daily_sales": daily_sales,
+    }
+
+def compute_monthly_metrics():
+    """Compute Monthly Results numbers for the current month."""
+    now = _dt.now()
+    y, m = now.year, now.month
+
+    # New Warm Leads this month
+    mo_warm = 0
+    for r in _file_rows(WARM_LEADS_PATH):
+        d = _parse_any_date(r.get("First Contact","") or r.get("Timestamp",""))
+        if d and d.year == y and d.month == m:
+            mo_warm += 1
+
+    # New Customers this month
+    mo_newcus = 0
+    for r in _file_rows(CUSTOMERS_PATH):
+        d = _parse_any_date(r.get("Customer Since",""))
+        if d and d.year == y and d.month == m:
+            mo_newcus += 1
+
+    # Total Sales this month
+    mo_sales = 0.0
+    for r in _file_rows(ORDERS_PATH):
+        d = _parse_any_date(r.get("Order Date",""))
+        if d and d.year == y and d.month == m:
+            mo_sales += _float_val(r.get("Amount",""))
+
+    return {
+        "mo_warm": mo_warm,
+        "mo_newcus": mo_newcus,
+        "mo_sales": mo_sales,
+    }
+
+def update_scoreboards(window):
+    """Refresh both Daily Activity and Monthly Results labels."""
+    try:
+        d = compute_daily_metrics()
+        m = compute_monthly_metrics()
+        if (el := _safe_get(window, "-DA_CALLS-")):   el.update(str(d["calls"]))
+        if (el := _safe_get(window, "-DA_EMAILS-")):  el.update(str(d["emails"]))
+        if (el := _safe_get(window, "-DA_WARMS-")):   el.update(str(d["new_warm"]))
+        if (el := _safe_get(window, "-DA_NEWCUS-")):  el.update(str(d["new_accounts"]))
+        if (el := _safe_get(window, "-DA_SALES-")):   el.update(_fmt_money(d["daily_sales"]))
+        if (el := _safe_get(window, "-MO_WARMS-")):   el.update(str(m["mo_warm"]))
+        if (el := _safe_get(window, "-MO_NEWCUS-")):  el.update(str(m["mo_newcus"]))
+        if (el := _safe_get(window, "-MO_SALES-")):   el.update(_fmt_money(m["mo_sales"]))
+    except Exception:
+        pass  # never crash UI on scoreboard refresh
+
+def _start_scoreboard_timer(window, interval_ms=5000):
+    """Use Tk after() to refresh scoreboards periodically."""
+    try:
+        def _tick():
+            try:
+                update_scoreboards(window)
+            finally:
+                try:
+                    window.TKroot.after(interval_ms, _tick)
+                except Exception:
+                    pass
+        update_scoreboards(window)
+        window.TKroot.after(interval_ms, _tick)
+    except Exception:
+        try:
+            update_scoreboards(window)
+        except Exception:
+            pass
+
+
+# ---------- Main live-grid logic ----------
+def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
+    # ---------- extractors tied to the live sheets ----------
+    def matrix_from_sheet():
+        # Guard: sheet may be None if mounting failed
+        if sheet is None or not hasattr(sheet, "get_sheet_data"):
+            return []
+        raw = sheet.get_sheet_data() or []
+        trimmed = []
+        for row in raw:
+            row = (list(row) + [""] * len(HEADER_FIELDS))[:len(HEADER_FIELDS)]
+            trimmed.append([str(c) for c in row])
+        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
+            trimmed.pop()
+        return trimmed
+
+    def warm_matrix_from_sheet_v2():
+        # Guard: warm_sheet may be None if mounting failed
+        if warm_sheet is None or not hasattr(warm_sheet, "get_sheet_data"):
+            return []
+        raw = warm_sheet.get_sheet_data() or []
+        trimmed = []
+        for row in raw:
+            row = (list(row) + [""] * len(WARM_V2_FIELDS))[:len(WARM_V2_FIELDS)]
+            trimmed.append([str(c) for c in row])
+        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
+            trimmed.pop()
+        return trimmed
+
+    def customers_matrix_from_sheet():
+        # Guard: customer_sheet may be None if mounting failed
+        if customer_sheet is None or not hasattr(customer_sheet, "get_sheet_data"):
+            return []
+        raw = customer_sheet.get_sheet_data() or []
+        trimmed = []
+        for row in raw:
+            row = (list(row) + [""] * len(CUSTOMER_FIELDS))[:len(CUSTOMER_FIELDS)]
+            trimmed.append([str(c) for c in row])
+        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
+            trimmed.pop()
+        return trimmed
+
+    # ----- dialer helpers / state -----
+    cols = dialer_cols_info(dial_sheet.headers() if hasattr(dial_sheet, "headers") else None)
+    state = {
+        "row": None,
+        "outcome": None,
+        "note_col_by_row": {},
+        "colored_row": None,
+    }
+
+    def _row_selected(sheet_obj):
+        if sheet_obj is None:
+            return None
+        try:
+            sel = sheet_obj.get_selected_rows() or []
+            if sel:
+                return sel[0]
+        except Exception:
+            pass
+        try:
+            r, _ = sheet_obj.get_currently_selected()
+            if isinstance(r, int) and r >= 0:
+                return r
+        except Exception:
+            pass
+        return None
+
+    def _set_working_row(r):
+        state["row"] = r
+        try:
+            dial_sheet.set_currently_selected(r, 0)
+            dial_sheet.see(r, 0)
+        except Exception:
+            pass
+
+    def _current_note_text():
+        try:
+            return (window["-DIAL_NOTE-"].get() or "").strip()
+        except Exception:
+            return ""
+
+    def _confirm_enabled():
+        r = state["row"]
+        if r is None:
+            return False
+        have_outcome = state["outcome"] in ("green","gray","red")
+        have_text    = bool(_current_note_text())
+        sticky = state["note_col_by_row"].get(r)
+        have_slot = (sticky is not None) or (dialer_next_empty_note_col(dial_sheet, r, cols) is not None)
+        return have_outcome and have_text and have_slot
+
+    def _update_confirm_button():
+        ok = _confirm_enabled()
+        try:
+            window["-DIAL_CONFIRM-"].update(disabled=not ok, button_color=("white", "#2E7D32" if ok else "#444444"))
+        except Exception:
+            pass
+
+    def _apply_outcome(r, which):
+        state["outcome"] = which
+        try:
+            xv = dial_sheet.MT.xview(); yv = dial_sheet.MT.yview()
+        except Exception:
+            xv = yv = None
+        try:
+            if state["colored_row"] is not None and state["colored_row"] != r:
+                dialer_clear_dot_highlights(dial_sheet, state["colored_row"], cols)
+        except Exception:
+            pass
+        f = cols["first_dot"]
+        try:
+            for i in range(3):
+                dial_sheet.set_cell_data(r, f+i, "○")
+            dial_sheet.set_cell_data(r, f + {"green":0,"gray":1,"red":2}[which], "●")
+            dialer_colorize_outcome(dial_sheet, r, which, cols)
+            dial_sheet.refresh()
+        finally:
+            try:
+                if xv: dial_sheet.MT.xview_moveto(xv[0])
+                if yv: dial_sheet.MT.yview_moveto(yv[0])
+            except Exception:
+                pass
+        state["colored_row"] = r
+        _update_confirm_button()
+
+    def _apply_note_preview(r):
+        txt = _current_note_text()
+        c = state["note_col_by_row"].get(r)
+        if c is None:
+            c = dialer_next_empty_note_col(dial_sheet, r, cols)
+            state["note_col_by_row"][r] = c
+        if c is None:
+            _update_confirm_button()
+            return
+        try:
+            xv = dial_sheet.MT.xview(); yv = dial_sheet.MT.yview()
+        except Exception:
+            xv = yv = None
+        try:
+            dial_sheet.set_cell_data(r, c, txt)
+            dial_sheet.refresh()
+        finally:
+            try:
+                if xv: dial_sheet.MT.xview_moveto(xv[0])
+                if yv: dial_sheet.MT.yview_moveto(yv[0])
+            except Exception:
+                pass
+        _update_confirm_button()
+
+    def _save_dialer_grid_to_csv():
+        try:
+            data = dial_sheet.get_sheet_data() or []
+        except Exception:
+            data = []
+        expected_len = len(HEADER_FIELDS) + 3 + 8
+        matrix = []
+        for row in data:
+            r = (list(row) + [""] * expected_len)[:expected_len]
+            for i in range(len(HEADER_FIELDS), len(HEADER_FIELDS)+3):
+                r[i] = r[i] if (r[i] or "").strip() else "○"
+            matrix.append(r)
+        save_dialer_leads_matrix(matrix)
+
+    # prime the dialer selected row (first non-empty, else 0)
+    try:
+        if state["row"] is None:
+            r0 = _row_selected(dial_sheet)
+            if r0 is None:
+                r0 = 0
+            _set_working_row(r0)
+    except Exception:
+        pass
+
+    # ============================================================
+    # Warm tab state & helpers
+    # ============================================================
+    warm_state = {"row": None, "outcome": None}
+    warm_cols = warm_get_col_index_map()
+
+    def _warm_selected_row():
+        return _row_selected(warm_sheet)
+
+    def _warm_note_text():
+        try:
+            return (window["-WARM_NOTE-"].get() or "").strip()
+        except Exception:
+            return ""
+
+    def _warm_confirm_enabled():
+        r = warm_state["row"]
+        if r is None: return False
+        if warm_state["outcome"] not in ("green","gray","red"): return False
+        if not _warm_note_text(): return False
+        try:
+            row_vals = warm_sheet.get_row_data(r) or []
+        except Exception:
+            row_vals = []
+        return warm_next_empty_call_col(row_vals, warm_cols) is not None
+
+    def _warm_update_confirm_button():
+        ok = _warm_confirm_enabled()
+        try:
+            window["-WARM_CONFIRM-"].update(disabled=not ok, button_color=("white", "#2E7D32" if ok else "#444444"))
+        except Exception:
+            pass
+
+    def _warm_set_row(r):
+        warm_state["row"] = r
+        try:
+            warm_sheet.set_currently_selected(r, 0)
+            warm_sheet.see(r, 0)
+        except Exception:
+            pass
+        _warm_update_confirm_button()
+
+    def _warm_apply_outcome(which):
+        warm_state["outcome"] = which
+        _warm_update_confirm_button()
+
+    def _warm_cost_normalize_in_row(r):
+        ci = warm_cols.get("cost")
+        if ci is None or warm_sheet is None:
+            return
+        try:
+            row_vals = warm_sheet.get_row_data(r) or []
+        except Exception:
+            return
+        val = row_vals[ci] if ci < len(row_vals) else ""
+        newv = warm_format_cost(val)
+        try:
+            warm_sheet.set_cell_data(r, ci, newv)
+            warm_sheet.refresh()
+        except Exception:
+            pass
+
+    def _save_warm_grid_to_csv_v2():
+        try:
+            total = warm_sheet.get_total_rows()
+        except Exception:
+            total = 0
+        for r in range(total):
+            _warm_cost_normalize_in_row(r)
+        matrix = warm_matrix_from_sheet_v2()
+        save_warm_leads_matrix_v2(matrix)
+
+    # ============================================================
+    # Customers helpers (save / selection / add order / analytics)
+    # ============================================================
+    def _save_customers_grid_to_csv():
+        try:
+            matrix = customers_matrix_from_sheet()
+            save_customers_matrix(matrix)
+            window["-CUST_STATUS-"].update("Saved ✓")
+        except Exception as e:
+            window["-CUST_STATUS-"].update(f"Save error: {e}")
+
+    def _customer_selected_row():
+        return _row_selected(customer_sheet)
+
+    def _cust_idx(name, default=None):
+        try:
+            return CUSTOMER_FIELDS.index(name)
+        except Exception:
+            return default
+
+    def _popup_add_order(company):
+        comp_disp = company or "(unknown)"
+        layout = [
+            [sg.Text(f"Add Order for: {comp_disp}", text_color="#9EE493")],
+            [sg.Text("Amount ($):", size=(12,1)), sg.Input(key="-AO_AMOUNT-", size=(20,1))],
+            [sg.Text("Order Date:", size=(12,1)), sg.Input(datetime.now().strftime("%Y-%m-%d"), key="-AO_DATE-", size=(20,1)),
+             sg.Text(" (YYYY-MM-DD or MM/DD/YYYY)", text_color="#AAAAAA")],
+            [sg.Push(), sg.Button("Cancel"), sg.Button("Add", button_color=("white","#2E7D32"))]
+        ]
+        win = sg.Window("Add Order", layout, modal=True, finalize=True)
+        while True:
+            ev, vals = win.read()
+            if ev in (sg.WINDOW_CLOSE_ATTEMPTED_EVENT, sg.WIN_CLOSED, "Cancel"):
+                win.close()
+                return None
+            if ev == "Add":
+                amount = (vals.get("-AO_AMOUNT-","") or "").strip()
+                date_s = (vals.get("-AO_DATE-","") or "").strip()
+                if not amount:
+                    sg.popup_error("Amount is required.")
+                    continue
+                win.close()
+                return (amount, date_s)
+
+    def _safe_update(key, text):
+        try:
+            if key in window.AllKeysDict:
+                window[key].update(text)
+        except Exception:
+            pass
+
+    def _orders_count_by_company():
+        counts = {}
+        if ORDERS_PATH.exists():
+            with ORDERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                for r in rdr:
+                    comp = (r.get("Company","") or "").strip()
+                    amt = r.get("Amount","") or ""
+                    try:
+                        val = float(str(amt).replace(",","").strip() or "0")
+                    except Exception:
+                        val = 0.0
+                    if comp:
+                        c, s = counts.get(comp, (0, 0.0))
+                        counts[comp] = (c+1, s+val)
+        return counts
+
+    def refresh_customer_analytics():
+        # Warm: count non-empty rows; sum samples
+        warm_leads = 0
+        samples_sum = 0.0
+        try:
+            if WARM_LEADS_PATH.exists():
+                with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
+                    rdr = csv.DictReader(f)
+                    for r in rdr:
+                        non_empty = (r.get("Company","") or r.get("Email","") or "").strip()
+                        if non_empty:
+                            warm_leads += 1
+                        try:
+                            samples_sum += float((r.get("Cost ($)","") or "0").replace(",","").strip() or "0")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Customers: totals, new_customers, LTV metrics, reorder
+        new_customers = 0
+        total_customers = 0
+        ltv_vals = []
+        total_sales = 0.0
+        reorder_yes = 0
+
+        orders_counts = _orders_count_by_company()
+        idx_reorder = _cust_idx("Reorder?")
+        idx_company = _cust_idx("Company")
+
+        try:
+            rows = customer_sheet.get_sheet_data() or []
+        except Exception:
+            rows = []
+
+        try:
+            if CUSTOMERS_PATH.exists():
+                with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                    rdr = csv.DictReader(f)
+                    disk_rows = list(rdr)
+            else:
+                disk_rows = []
+        except Exception:
+            disk_rows = []
+
+        disk_changed = False
+
+        for r_idx, row in enumerate(rows):
+            rec = {CUSTOMER_FIELDS[i]: (row[i] if i < len(CUSTOMER_FIELDS) else "") for i in range(len(CUSTOMER_FIELDS))}
+            comp = (rec.get("Company","") or "").strip()
+            if not any((rec.get(h,"") or "").strip() for h in CUSTOMER_FIELDS):
+                continue
+            total_customers += 1
+            if (rec.get("Customer Since","") or "").strip():
+                new_customers += 1
+            # LTV + total sales
+            try:
+                v = float((rec.get("CLTV","") or "").replace(",","").strip() or "0")
+                if v > 0:
+                    ltv_vals.append(v)
+                    total_sales += v
+            except Exception:
+                pass
+            # Reorder explicit
+            is_yes_now = ((rec.get("Reorder?","") or "").strip().lower() == "yes")
+            # Auto YES if >=2 orders
+            oc = orders_counts.get(comp, (0, 0.0))[0] if comp else 0
+            if oc >= 2 and not is_yes_now:
+                if idx_reorder is not None:
+                    try:
+                        customer_sheet.set_cell_data(r_idx, idx_reorder, "Yes")
+                        is_yes_now = True
+                    except Exception:
+                        pass
+                for drow in disk_rows:
+                    if (drow.get("Company","") or "").strip() == comp:
+                        if (drow.get("Reorder?","") or "").strip().lower() != "yes":
+                            drow["Reorder?"] = "Yes"
+                            disk_changed = True
+            if is_yes_now:
+                reorder_yes += 1
+
+        if disk_changed:
+            try:
+                _backup(CUSTOMERS_PATH)
+                _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, [[r.get(h,"") for h in CUSTOMER_FIELDS] for r in disk_rows])
+            except Exception:
+                pass
+
+        close_rate = (new_customers / warm_leads * 100.0) if warm_leads else 0.0
+        cac = (samples_sum / new_customers) if new_customers else 0.0
+        avg_ltv = (sum(ltv_vals) / len(ltv_vals)) if ltv_vals else 0.0
+        reorder_rate = (reorder_yes / total_customers * 100.0) if total_customers else 0.0
+
+        # Update UI (keys from CHUNK 2)
+        _safe_update("-AN_WARMS-", str(warm_leads))
+        _safe_update("-AN_NEWCUS-", str(new_customers))
+        _safe_update("-AN_CLOSERATE-", f"{close_rate:.1f}%")
+
+        _safe_update("-AN_TOTALSALES-", f"{total_sales:.2f}")
+        _safe_update("-AN_CAC-", f"{cac:.2f}")
+        _safe_update("-AN_LTV-", f"{avg_ltv:.2f}")
+        ratio = (avg_ltv / cac) if cac > 0 else 0.0
+        _safe_update("-AN_CACLTV-", f"1 : {ratio:.2f}" if cac > 0 else "1 : 0")
         _safe_update("-AN_REORDER-", f"{reorder_rate:.1f}%")
 
     # ============================================================
-    # prime UI (Email Results stats + analytics)
+    # Prime UI (Email Results stats + analytics + scoreboards)
     # ============================================================
     def refresh_fire_state():
         matrix = matrix_from_sheet()
@@ -2143,11 +3045,13 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
     refresh_results_metrics()
     _update_confirm_button()
     _warm_update_confirm_button()
-    # first analytics draw
     try:
         refresh_customer_analytics()
     except Exception:
         pass
+
+    # Start scoreboard auto-refresh (every 5 seconds)
+    _start_scoreboard_timer(window, interval_ms=5000)
 
     # ============================================================
     # Event loop
@@ -2157,7 +3061,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         if event in (sg.WINDOW_CLOSE_ATTEMPTED_EVENT, sg.WIN_CLOSED):
             break
 
-        # Track grid selection changes
+        # Selection change tracking
         r_now = _row_selected(dial_sheet)
         if r_now is not None and r_now != state["row"]:
             _set_working_row(r_now)
@@ -2168,7 +3072,16 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         if r_warm_now is not None and r_warm_now != warm_state["row"]:
             _warm_set_row(r_warm_now)
 
-        # ---------------- Email Leads tab buttons ----------------
+        # ---------- Top bar ----------
+        if event == "-UPDATE-":
+            # Manual refresh of scoreboards + analytics
+            try:
+                update_scoreboards(window)
+                refresh_customer_analytics()
+            except Exception as e:
+                popup_error(f"Refresh error: {e}")
+
+        # ---------------- Email Leads tab ----------------
         if event == "-OPENFOLDER-":
             try:
                 os.startfile(str(APP_DIR))
@@ -2176,28 +3089,34 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 popup_error(f"Open folder error: {e}")
 
         elif event == "-ADDROWS-":
-            try:
-                sheet.insert_rows(sheet.get_total_rows(), number_of_rows=10); sheet.refresh()
-            except Exception:
-                try: sheet.insert_rows(sheet.get_total_rows(), amount=10); sheet.refresh()
-                except Exception as e: popup_error(f"Could not add rows: {e}")
+            if sheet is None:
+                popup_error("Leads sheet not initialized.")
+            else:
+                try:
+                    sheet.insert_rows(sheet.get_total_rows(), number_of_rows=10); sheet.refresh()
+                except Exception:
+                    try: sheet.insert_rows(sheet.get_total_rows(), amount=10); sheet.refresh()
+                    except Exception as e: popup_error(f"Could not add rows: {e}")
             refresh_fire_state()
 
         elif event == "-DELROWS-":
-            try:
-                sels = sheet.get_selected_rows() or []
-                if sels:
-                    for r in sorted(sels, reverse=True):
-                        try: sheet.delete_rows(r, 1)
-                        except Exception:
-                            try: sheet.delete_rows(r)
+            if sheet is None:
+                popup_error("Leads sheet not initialized.")
+            else:
+                try:
+                    sels = sheet.get_selected_rows() or []
+                    if sels:
+                        for r in sorted(sels, reverse=True):
+                            try: sheet.delete_rows(r, 1)
                             except Exception:
-                                try: sheet.del_rows(r, 1)
+                                try: sheet.delete_rows(r)
                                 except Exception:
-                                    pass
-                    sheet.refresh()
-            except Exception as e:
-                popup_error(f"Could not delete rows: {e}")
+                                    try: sheet.del_rows(r, 1)
+                                    except Exception:
+                                        pass
+                        sheet.refresh()
+                except Exception as e:
+                    popup_error(f"Could not delete rows: {e}")
             refresh_fire_state()
 
         elif event == "-SAVECSV-":
@@ -2268,6 +3187,11 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-RSTABLE-"].update(values=data)
                 refresh_results_metrics()
                 window["-RS_STATUS-"].update(f"Synced: {s_count} sent refs; {r_count} replies.")
+                # After syncing, also refresh scoreboards (emails / warm leads may change)
+                try:
+                    update_scoreboards(window)
+                except Exception:
+                    pass
             except Exception as e:
                 window["-RS_STATUS-"].update(f"Sync error: {e}")
 
@@ -2285,8 +3209,11 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                          r.get("DateSent",""), r.get("DateReplied",""), r.get("Status",""), r.get("Subject","")] for r in rows]
                 window["-RSTABLE-"].update(values=data)
                 refresh_results_metrics()
-                try: refresh_customer_analytics()
-                except Exception: pass
+                try: 
+                    refresh_customer_analytics()
+                    update_scoreboards(window)
+                except Exception: 
+                    pass
 
         elif event == "-MARK_GRAY-":
             sels = values.get("-RSTABLE-", [])
@@ -2316,7 +3243,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-RSTABLE-"].update(values=data)
                 refresh_results_metrics()
 
-        # ---------------- Dialer tab: buttons ----------------
+        # ---------------- Dialer tab ----------------
         elif event == "-DIAL_SET_GREEN-":
             if state["row"] is None:
                 r = _row_selected(dial_sheet)
@@ -2384,12 +3311,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                                 except Exception:
                                     pass
 
-                        # Persist CSV logs
                         dialer_save_call(base, outcome, note_text)
                         if outcome == "red":
                             add_no_interest(base, note_text, no_contact_flag=0, source="Dialer")
                         elif outcome == "gray":
-                            # Count filled notes for no-contact rule
                             filled = 0
                             row_vals2 = dial_sheet.get_row_data(r) or []
                             for k in range(cols["first_note"], cols["last_note"]+1):
@@ -2403,9 +3328,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         state["outcome"] = None
                         state["note_col_by_row"].pop(r, None)
 
-                        # If green or red → remove row and persist dialer grid to CSV
                         if outcome in ("green", "red"):
-                            # delete row in-grid
                             try:
                                 dial_sheet.delete_rows(r, 1)
                             except Exception:
@@ -2420,10 +3343,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                                 dial_sheet.refresh()
                             except Exception:
                                 pass
-                            # Save updated grid to CSV
                             _save_dialer_grid_to_csv()
-
-                            # move selection to the next row (same index now points to next)
                             try:
                                 total = dial_sheet.get_total_rows()
                             except Exception:
@@ -2434,7 +3354,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                                 new_idx = min(r, max(0, total - 1))
                                 _set_working_row(new_idx)
                         else:
-                            # gray: stay and move to next row
                             _save_dialer_grid_to_csv()
                             new_row = dialer_move_to_next_row(dial_sheet, r)
                             _set_working_row(new_row)
@@ -2446,7 +3365,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
         elif event == "-DIAL_ADD100-":
             try:
-                # Append 100 blank dialer rows: left headers empty + three "○" + 8 blanks
                 add = [[""] * len(HEADER_FIELDS) + ["○","○","○"] + ([""]*8) for _ in range(100)]
                 try:
                     cur = dial_sheet.get_sheet_data() or []
@@ -2458,7 +3376,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception as e:
                 window["-DIAL_MSG-"].update(f"Add rows error: {e}")
 
-        # ---------------- Warm tab: buttons ----------------
+        # ---------------- Warm tab ----------------
         elif event == "-WARM_SET_GREEN-":
             if warm_state["row"] is None:
                 r = _warm_selected_row()
@@ -2502,25 +3420,14 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-WARM_STATUS-"].update("Type a note.")
                 continue
 
-            # Prepare row values
             try:
                 row_vals = warm_sheet.get_row_data(r) or []
             except Exception:
                 row_vals = []
-            # Normalize cost
-            ci = warm_cols["cost"]
-            if ci is not None:
-                try:
-                    cur_cost = row_vals[ci] if ci < len(row_vals) else ""
-                except Exception:
-                    cur_cost = ""
-                new_cost = warm_format_cost(cur_cost)
-                try:
-                    warm_sheet.set_cell_data(r, ci, new_cost)
-                except Exception:
-                    pass
 
-            # Stamp note into next empty Call N column
+            # Normalize Cost ($) only; DO NOT touch creation date ("First Contact")
+            _warm_cost_normalize_in_row(r)
+
             col_call = warm_next_empty_call_col(row_vals, warm_cols)
             if col_call is None:
                 window["-WARM_STATUS-"].update("All 15 call slots are filled.")
@@ -2532,25 +3439,13 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception:
                 pass
 
-            # Update the Timestamp column to today (MM-DD)
-            ti = warm_cols["timestamp"]
-            if ti is not None:
-                try:
-                    warm_sheet.set_cell_data(r, ti, stamp)
-                except Exception:
-                    pass
-
-            # Persist to CSV
             try:
                 warm_sheet.refresh()
             except Exception:
                 pass
             _save_warm_grid_to_csv_v2()
 
-            # Additional routing based on outcome
             outcome = warm_state["outcome"]
-            # Build a minimal dict for no-interest if needed
-            # We'll map by known WARM_V2_FIELDS names where possible
             wmap = {WARM_V2_FIELDS[i]: (row_vals[i] if i < len(WARM_V2_FIELDS) else "") for i in range(len(WARM_V2_FIELDS))}
             base = {
                 "Email": wmap.get("Email",""),
@@ -2600,7 +3495,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             if path:
                 try:
                     _save_warm_grid_to_csv_v2()
-                    # Copy file to path chosen
                     with WARM_LEADS_PATH.open("rb") as s, open(path, "wb") as d:
                         d.write(s.read())
                     window["-WARM_STATUS-"].update("Exported ✓")
@@ -2663,7 +3557,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             if "Customer Since" in CUSTOMER_FIELDS:
                 cust["Customer Since"] = datetime.now().strftime("%Y-%m-%d")
             if "Notes" in CUSTOMER_FIELDS:
-                # Grab latest filled Call note as default notes
                 last_note = ""
                 for i in range(15, 0, -1):
                     v = warm_row.get(f"Call {i}", "")
@@ -2682,7 +3575,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 existing.append([cust.get(h,"") for h in CUSTOMER_FIELDS])
                 _backup(CUSTOMERS_PATH)
                 _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, existing)
-                # Update grid & persist warm
                 try:
                     warm_sheet.delete_rows(r_idx, 1)
                 except Exception:
@@ -2701,7 +3593,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception as e:
                 window["-WARM_STATUS-"].update(f"Move error (customers): {e}")
 
-        # ---------------- Customers tab: buttons ----------------
+        # ---------------- Customers tab ----------------
         elif event == "-CUST_ADD50-":
             try:
                 add = [[""] * len(CUSTOMER_FIELDS) for _ in range(50)]
@@ -2723,7 +3615,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-CUST_STATUS-"].update("Pick a customer row first.")
                 continue
 
-            # Pull company from selected row
             try:
                 row_vals = customer_sheet.get_row_data(r_sel) or []
             except Exception:
@@ -2734,7 +3625,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-CUST_STATUS-"].update("Company is required on the selected row.")
                 continue
 
-            # Pop dialog to collect order details
             res = _popup_add_order(company)
             if not res:
                 window["-CUST_STATUS-"].update("Canceled.")
@@ -2747,9 +3637,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-CUST_STATUS-"].update(f"Add order error: {e}")
                 continue
 
-            # Compute stats and reflect them in-grid
             stats = compute_customer_order_stats(company)
-            # Column indices
             idx_fod  = _cust_idx("First Order Date")
             idx_lod  = _cust_idx("Last Order Date")
             idx_cltv = _cust_idx("CLTV")
@@ -2774,11 +3662,9 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception:
                 pass
 
-            # Persist the whole customers grid (the append_order_row already updated customers.csv too)
             _save_customers_grid_to_csv()
             window["-CUST_STATUS-"].update("Order added ✓")
 
-            # Refresh analytics (CAC/LTV/Reorder may change)
             try:
                 refresh_customer_analytics()
             except Exception:
@@ -2794,7 +3680,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                                      file_types=(("CSV","*.csv"),), no_window=True)
             if path:
                 try:
-                    # Ensure on-disk content matches the grid first
                     _save_customers_grid_to_csv()
                     with CUSTOMERS_PATH.open("rb") as s, open(path, "wb") as d:
                         d.write(s.read())
@@ -2838,4 +3723,4 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
         input("\n\n[ERROR] Press Enter to exit...")
-# ===== CHUNK 4 / 4 — END =====
+# ===== CHUNK 5 / 5 — END =====
