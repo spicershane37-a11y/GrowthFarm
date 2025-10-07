@@ -37,6 +37,9 @@ STATE_PATH   = APP_DIR / "annihilated_planets.txt"
 TPL_PATH     = APP_DIR / "templates.ini"
 RESULTS_PATH = APP_DIR / "results.csv"
 
+# NEW: campaigns config file (separate from templates.ini to avoid clobbering)
+CAMPAIGNS_INI = APP_DIR / "campaigns.ini"
+
 # Dialer / warm / no-interest / customers / orders files
 DIALER_RESULTS_PATH = APP_DIR / "dialer_results.csv"
 WARM_LEADS_PATH     = APP_DIR / "warm_leads.csv"
@@ -81,49 +84,65 @@ CUSTOMER_FIELDS = [
 START_ROWS = 200
 DEFAULT_COL_WIDTH = 140
 
-# -------------------- Generic, brand-safe defaults ----------
-DEFAULT_SUBJECT = "Quick intro from YOUR COMPANY"
+# -------------------- Template defaults (SAFE FALLBACKS) ----
+# These guards prevent crashes if the constants aren’t defined elsewhere.
+if "DEFAULT_SUBJECT" not in globals():
+    DEFAULT_SUBJECT = "Quick intro from YOUR COMPANY"
 
-DEFAULT_TEMPLATES = {
-    "default": (
-        "Hey {First Name},\n\n"
-        "My name is YOUR NAME with YOUR COMPANY. We help {Industry} MAIN GOAL. "
-        "If it’s useful, I can share examples or send over a couple of samples.\n\n"
-        "Thanks,\n"
-        "YOUR NAME\n"
-        "YOUR COMPANY\n"
-        "PHONE\n"
-        "WEBSITE"
-    ),
-    "butcher_shop": (
-        "Hey {First Name},\n\n"
-        "My name is YOUR NAME with YOUR COMPANY. We help butcher shops MAIN GOAL. "
-        "If it’s useful, I can share examples or send over a couple of samples.\n\n"
-        "Thanks,\n"
-        "YOUR NAME\n"
-        "YOUR COMPANY\n"
-        "PHONE\n"
-        "WEBSITE"
-    ),
-    "farm_orchard": (
-        "Hey {First Name},\n\n"
-        "My name is YOUR NAME with YOUR COMPANY. We help farms & orchards MAIN GOAL. "
-        "If it’s useful, I can share examples or send over a couple of samples.\n\n"
-        "Thanks,\n"
-        "YOUR NAME\n"
-        "YOUR COMPANY\n"
-        "PHONE\n"
-        "WEBSITE"
-    ),
+if "DEFAULT_TEMPLATES" not in globals():
+    DEFAULT_TEMPLATES = {
+        "default": (
+            "Hey {First Name},\n\n"
+            "My name is YOUR NAME with YOUR COMPANY. We help {Industry} MAIN GOAL. "
+            "If it’s useful, I can share examples or send over a couple of samples.\n\n"
+            "Thanks,\n"
+            "YOUR NAME\n"
+            "YOUR COMPANY\n"
+            "PHONE\n"
+            "WEBSITE"
+        ),
+        "butcher_shop": (
+            "Hey {First Name},\n\n"
+            "My name is YOUR NAME with YOUR COMPANY. We help butcher shops MAIN GOAL. "
+            "If it’s useful, I can share examples or send over a couple of samples.\n\n"
+            "Thanks,\n"
+            "YOUR NAME\n"
+            "YOUR COMPANY\n"
+            "PHONE\n"
+            "WEBSITE"
+        ),
+        "farm_orchard": (
+            "Hey {First Name},\n\n"
+            "My name is YOUR NAME with YOUR COMPANY. We help farms & orchards MAIN GOAL. "
+            "If it’s useful, I can share examples or send over a couple of samples.\n\n"
+            "Thanks,\n"
+            "YOUR NAME\n"
+            "YOUR COMPANY\n"
+            "PHONE\n"
+            "WEBSITE"
+        ),
+    }
+
+if "DEFAULT_SUBJECTS" not in globals():
+    DEFAULT_SUBJECTS = {
+        "default":      DEFAULT_SUBJECT,
+        "butcher_shop": DEFAULT_SUBJECT,
+        "farm_orchard": DEFAULT_SUBJECT,
+    }
+
+if "DEFAULT_MAP" not in globals():
+    DEFAULT_MAP = {}
+
+# -------------------- Campaign defaults ---------------------
+# Up to 3 steps; delays are from the *DateSent* in results.csv.
+DEFAULT_CAMPAIGN_STEPS = [
+    {"subject": DEFAULT_SUBJECTS.get("default", DEFAULT_SUBJECT), "body": DEFAULT_TEMPLATES["default"], "delay_days": "0"},
+    {"subject": DEFAULT_SUBJECTS.get("default", DEFAULT_SUBJECT), "body": "", "delay_days": "3"},
+    {"subject": DEFAULT_SUBJECTS.get("default", DEFAULT_SUBJECT), "body": "", "delay_days": "7"},
+]
+DEFAULT_CAMPAIGN_SETTINGS = {
+    "send_to_dialer_after": "1",   # 1 = True, 0 = False
 }
-
-DEFAULT_SUBJECTS = {
-    "default":      DEFAULT_SUBJECT,
-    "butcher_shop": DEFAULT_SUBJECT,
-    "farm_orchard": DEFAULT_SUBJECT,
-}
-
-DEFAULT_MAP = {}
 
 # -------------------- Regex helpers -------------------------
 EMAIL_RE       = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -150,7 +169,7 @@ def ensure_app_files():
     ensure_warm_file()
     ensure_no_interest_file()
     ensure_orders_file()
-    # customers.csv ensured when mounting grid (and in Part 2 before saving)
+    ensure_campaigns_ini()  # NEW
 
 def save_templates_ini(templates_dict, subjects_dict, map_dict):
     cfg = configparser.ConfigParser()
@@ -169,6 +188,323 @@ def load_templates_ini():
     for k,v in DEFAULT_TEMPLATES.items(): tpls.setdefault(k, v)
     for k,v in DEFAULT_SUBJECTS.items():  subs.setdefault(k, v)
     return tpls, subs, mp
+
+# ============================================================
+# Campaigns persistence (separate INI)
+# ============================================================
+# ---------- Campaigns step normalization ----------
+
+def _coerce_step_dict(step):
+    """
+    Convert any step representation (dict / tuple / list / str / None) into a
+    normalized dict: {"enabled": bool, "subject": str, "body": str, "delay_days": int}
+    """
+    def _to_int(x, default=0):
+        try:
+            s = str(x).strip()
+            return int(s) if s else default
+        except Exception:
+            return default
+
+    if isinstance(step, dict):
+        return {
+            "enabled": str(step.get("enabled", "1")).strip().lower() not in ("0", "false", "no"),
+            "subject": step.get("subject", "") or "",
+            "body": step.get("body", "") or "",
+            "delay_days": _to_int(step.get("delay_days", 0), 0),
+        }
+
+    if isinstance(step, (list, tuple)):
+        # Heuristic: [enabled, subject, body, delay_days]
+        enabled = True
+        subject = ""
+        body = ""
+        delay_days = 0
+        if len(step) > 0: enabled = str(step[0]).strip().lower() not in ("0", "false", "no", "")
+        if len(step) > 1: subject = step[1] or ""
+        if len(step) > 2: body = step[2] or ""
+        if len(step) > 3: delay_days = _to_int(step[3], 0)
+        return {
+            "enabled": bool(enabled),
+            "subject": subject,
+            "body": body,
+            "delay_days": delay_days,
+        }
+
+    if isinstance(step, str):
+        # Treat as "body only"
+        return {"enabled": True, "subject": "", "body": step, "delay_days": 0}
+
+    # Fallback empty
+    return {"enabled": False, "subject": "", "body": "", "delay_days": 0}
+
+
+def normalize_campaign_steps(steps):
+    """
+    Ensure we have exactly 3 normalized step dicts.
+    """
+    norm = []
+    steps = steps or []
+    for i in range(min(3, len(steps))):
+        norm.append(_coerce_step_dict(steps[i]))
+    while len(norm) < 3:
+        norm.append({"enabled": False, "subject": "", "body": "", "delay_days": 0})
+    return norm
+
+
+def normalize_campaign_settings(settings):
+    """
+    Single-source campaign settings (all strings "0"/"1"):
+    - send_to_dialer_after: "0"/"1"  (default "1")
+    - auto_sync_outlook:    "0"/"1"  (default "0")
+    - hourly_campaign_runner:"0"/"1" (default "1")
+    """
+    defaults = {
+        "send_to_dialer_after": "1",   # move non-responders to Dialer automatically
+        "auto_sync_outlook": "0",      # Outlook auto-sync OFF by default (user can enable in UI)
+        "hourly_campaign_runner": "1", # run campaign scheduler hourly
+    }
+    if isinstance(settings, dict):
+        out = defaults.copy()
+        out.update({
+            "send_to_dialer_after": str(settings.get("send_to_dialer_after", defaults["send_to_dialer_after"])).strip(),
+            "auto_sync_outlook":    str(settings.get("auto_sync_outlook",    defaults["auto_sync_outlook"])).strip(),
+            "hourly_campaign_runner": str(settings.get("hourly_campaign_runner", defaults["hourly_campaign_runner"])).strip(),
+        })
+        return out
+    return defaults
+
+
+def ensure_campaigns_ini():
+    """Create campaigns.ini with defaults if missing."""
+    if CAMPAIGNS_INI.exists():
+        return
+    # Use defaults if available in globals; else create simple blanks
+    try:
+        steps = DEFAULT_CAMPAIGN_STEPS
+    except NameError:
+        steps = [
+            {"subject": "", "body": "", "delay_days": 0},
+            {"subject": "", "body": "", "delay_days": 0},
+            {"subject": "", "body": "", "delay_days": 0},
+        ]
+    try:
+        settings = DEFAULT_CAMPAIGN_SETTINGS
+    except NameError:
+        settings = {"send_to_dialer_after":"1","auto_sync_outlook":"0","hourly_campaign_runner":"1"}
+    save_campaigns_ini(steps, settings)
+
+
+def save_campaigns_ini(steps_list, settings_dict):
+    """
+    Persist up to 3 steps and simple settings.
+    steps_list: list of dicts with keys {subject, body, delay_days}
+    settings_dict: {"send_to_dialer_after": "0/1", "auto_sync_outlook":"0/1", "hourly_campaign_runner":"0/1"}
+    """
+    cfg = configparser.ConfigParser()
+
+    # Steps (normalize before writing to be safe)
+    steps_list = normalize_campaign_steps(steps_list)
+    for i in range(1, 4):
+        sec = f"step{i}"
+        s = steps_list[i-1]
+        cfg[sec] = {
+            "enabled":    "1" if s.get("enabled", True) else "0",
+            "subject":    s.get("subject", "") or "",
+            "body":       s.get("body", "") or "",
+            "delay_days": str(s.get("delay_days", 0)),
+        }
+
+    # Settings (normalize)
+    settings_dict = normalize_campaign_settings(settings_dict or {})
+    cfg["settings"] = {
+        "send_to_dialer_after": settings_dict.get("send_to_dialer_after", "1"),
+        "auto_sync_outlook":    settings_dict.get("auto_sync_outlook", "0"),
+        "hourly_campaign_runner": settings_dict.get("hourly_campaign_runner", "1"),
+    }
+
+    with CAMPAIGNS_INI.open("w", encoding="utf-8") as f:
+        cfg.write(f)
+
+
+def load_campaigns_ini():
+    """Return (steps_list, settings_dict)."""
+    ensure_campaigns_ini()
+    cfg = configparser.ConfigParser()
+    cfg.read(CAMPAIGNS_INI, encoding="utf-8")
+
+    steps = []
+    for i in range(1, 4):
+        sec = f"step{i}"
+        s = cfg[sec] if sec in cfg else {}
+        # accept older files that didn’t have "enabled"
+        enabled_raw = (s.get("enabled", "1") if isinstance(s, dict) else "1")
+        steps.append({
+            "enabled":    str(enabled_raw).strip() not in ("0","false","no"),
+            "subject":    s.get("subject", "") if isinstance(s, dict) else "",
+            "body":       s.get("body", "") if isinstance(s, dict) else "",
+            "delay_days": int(str(s.get("delay_days","0")).strip() or "0") if isinstance(s, dict) else 0,
+        })
+
+    # Settings
+    if "settings" in cfg:
+        raw = dict(cfg["settings"])
+    else:
+        try:
+            raw = dict(DEFAULT_CAMPAIGN_SETTINGS)
+        except NameError:
+            raw = {}
+    settings = normalize_campaign_settings(raw)
+
+    return steps, settings
+# ---------- Multi-campaign storage (named by niche/industry) ----------
+
+# campaigns.ini layout (backward compatible):
+# [index]
+# keys = default,butcher shop,farm market
+#
+# [campaign:default]
+# subject1=...
+# body1=...
+# delay1=3
+# subject2=...
+# body2=...
+# delay2=5
+# subject3=...
+# body3=...
+# delay3=10
+# send_to_dialer_after=1
+# auto_sync_outlook=0
+# hourly_campaign_runner=1
+#
+# [campaign:butcher shop]
+# ...same fields...
+
+def _campaign_section_name(key: str) -> str:
+    return f"campaign:{(key or '').strip()}"
+
+def _read_campaign_cfg():
+    cfg = configparser.ConfigParser()
+    cfg.read(CAMPAIGNS_INI, encoding="utf-8")
+    return cfg
+
+def list_campaign_keys():
+    """Return a sorted list of campaign keys (niche names)."""
+    ensure_campaigns_ini()
+    cfg = _read_campaign_cfg()
+    keys_csv = (cfg.get("index", "keys", fallback="") or "").strip()
+    keys = [k.strip() for k in keys_csv.split(",") if k.strip()]
+    # also pick up any sections that start with campaign:
+    for sec in cfg.sections():
+        if sec.lower().startswith("campaign:"):
+            k = sec.split(":",1)[1].strip()
+            if k and k not in keys:
+                keys.append(k)
+    # if empty, add "default"
+    if not keys:
+        keys = ["default"]
+    return sorted(keys, key=lambda s: s.lower())
+
+def _write_index(cfg, keys):
+    cfg.setdefault("index", {})
+    cfg["index"]["keys"] = ",".join(keys)
+
+def load_campaign_by_key(key: str):
+    """
+    Return (steps, settings) for a named campaign key.
+    Falls back to defaults if key/section missing.
+    """
+    ensure_campaigns_ini()
+    cfg = _read_campaign_cfg()
+    sec = _campaign_section_name(key)
+    if sec not in cfg:
+        # backward-compat migrate root single-campaign if present
+        try:
+            steps, settings = load_campaigns_ini()
+            save_campaign_by_key(key, steps, settings)
+            cfg = _read_campaign_cfg()
+        except Exception:
+            pass
+
+    s = cfg[sec] if sec in cfg else {}
+    # Read fields
+    steps = []
+    for i in range(1, 4):
+        steps.append({
+            "subject": s.get(f"subject{i}", ""),
+            "body": s.get(f"body{i}", ""),
+            "delay_days": s.get(f"delay{i}", "0"),
+        })
+    settings = {
+        "send_to_dialer_after": s.get("send_to_dialer_after", "1"),
+        "auto_sync_outlook": s.get("auto_sync_outlook", "0"),
+        "hourly_campaign_runner": s.get("hourly_campaign_runner", "1"),
+    }
+    # normalize
+    steps = normalize_campaign_steps(steps)
+    settings = normalize_campaign_settings(settings)
+    return steps, settings
+
+def save_campaign_by_key(key: str, steps, settings):
+    """Save (or create) a campaign section for this key and update index."""
+    ensure_campaigns_ini()
+    cfg = _read_campaign_cfg()
+    sec = _campaign_section_name(key)
+    if sec not in cfg:
+        cfg.add_section(sec)
+
+    steps = normalize_campaign_steps(steps)
+    settings = normalize_campaign_settings(settings)
+
+    for i, st in enumerate(steps, start=1):
+        cfg[sec][f"subject{i}"] = st.get("subject","")
+        cfg[sec][f"body{i}"]    = st.get("body","")
+        cfg[sec][f"delay{i}"]   = str(st.get("delay_days","0"))
+
+    # settings
+    cfg[sec]["send_to_dialer_after"]   = "1" if settings.get("send_to_dialer_after") else "0"
+    cfg[sec]["auto_sync_outlook"]      = "1" if settings.get("auto_sync_outlook") else "0"
+    cfg[sec]["hourly_campaign_runner"] = "1" if settings.get("hourly_campaign_runner") else "0"
+
+    # index
+    keys = list_campaign_keys()
+    if key not in keys:
+        keys.append(key)
+    _write_index(cfg, keys)
+
+    with CAMPAIGNS_INI.open("w", encoding="utf-8") as f:
+        cfg.write(f)
+
+def delete_campaign_by_key(key: str):
+    """Delete a campaign section and remove it from index; keep at least 'default'."""
+    ensure_campaigns_ini()
+    cfg = _read_campaign_cfg()
+    sec = _campaign_section_name(key)
+    if sec in cfg:
+        cfg.remove_section(sec)
+    keys = [k for k in list_campaign_keys() if k != key]
+    if not keys:
+        keys = ["default"]
+    _write_index(cfg, keys)
+    with CAMPAIGNS_INI.open("w", encoding="utf-8") as f:
+        cfg.write(f)
+
+def summarize_campaign_for_table(key: str):
+    """Return a compact row describing a campaign for the UI table."""
+    steps, settings = load_campaign_by_key(key)
+    enabled = [i+1 for i, st in enumerate(steps) if st.get("subject") or st.get("body")]
+    delays = [str(st.get("delay_days",0)) for st in steps]
+    return [
+        key,
+        ", ".join(map(str, enabled)) or "—",
+        " / ".join(delays),
+        "Yes" if settings.get("send_to_dialer_after") else "No",
+        "Yes" if settings.get("auto_sync_outlook") else "No",
+        "Yes" if settings.get("hourly_campaign_runner") else "No",
+    ]
+# ----------------------------------------------------------------------
+
+
 
 # ============================================================
 # Results persistence
@@ -454,30 +790,30 @@ def _ensure_rc_menu_plain_paste(sheet_obj, tk_root):
 
 def _enable_column_resizing(sheet_obj):
     """
-    Turn on column resizing regardless of tksheet version.
-    Enables a bunch of possible flags; ignores ones that don't exist.
+    Safely request column resizing & related features without touching existing bindings.
+    Works across multiple tksheet versions by trying features one-by-one.
     """
-    flags = [
+    wanted = (
         "column_width_resize",   # tksheet 6.x
         "column_resize",         # older alias
         "resize_columns",        # older alias
         "drag_select",
         "column_drag_and_drop",
-    ]
+    )
+    # Try to enable in one call first
     try:
-        # tksheet >= 6.x
-        sheet_obj.enable_bindings(tuple(set(sheet_obj.get_bindings() + tuple(flags))))
+        sheet_obj.enable_bindings(wanted)
+        return
     except Exception:
+        pass
+    # Fall back: try each flag individually
+    for fl in wanted:
         try:
-            for fl in flags:
-                try:
-                    sheet_obj.enable_bindings((fl,))
-                except Exception:
-                    pass
+            sheet_obj.enable_bindings((fl,))
         except Exception:
             pass
-# ===== CHUNK 1 / 5 — END =====
-# ===== CHUNK 2 / 5 — START =====
+# ===== CHUNK 1 / 6 — END =====
+# ===== CHUNK 2 / 6 — START =====
 # ============================================================
 # GUI
 # ============================================================
@@ -486,6 +822,20 @@ def main():
     print(">>> ENTERING main()")
     ensure_app_files()
     templates, subjects, mapping = load_templates_ini()
+
+    # ---- Campaigns: load keys and default campaign (niche/industry) ----
+    try:
+        campaign_keys = list_campaign_keys()
+    except Exception:
+        campaign_keys = ["default"]
+    current_campaign_key = (campaign_keys[0] if campaign_keys else "default")
+
+    try:
+        camp_steps, camp_settings = load_campaign_by_key(current_campaign_key)
+    except Exception:
+        camp_steps, camp_settings = ([], {})
+    camp_steps = normalize_campaign_steps(camp_steps)
+    camp_settings = normalize_campaign_settings(camp_settings)
 
     theme_applied = False
     if callable(set_theme):
@@ -506,9 +856,10 @@ def main():
     top_bar = [
         sg.Text(f"Death Star v{APP_VERSION}", text_color="#9EE493"),
         sg.Push(),
-        sg.Button("Update", key="-UPDATE-", button_color=("white","#444444"))
+        sg.Button("Update", key="-UPDATE-", button_color=("white", "#444444"))
     ]
 
+    # ================== SCOREBOARD WIDGETS ==================
     # ---- DAILY ACTIVITY SCOREBOARD (2 columns) ----
     da_header = [[sg.Text("DAILY ACTIVITY TRACKER",
                           text_color="#9EE493",
@@ -526,7 +877,7 @@ def main():
     ]
     daily_scoreboard = sg.Frame(
         "",
-        da_header + [[sg.Column(da_left, pad=(6,6)), sg.Text("   "), sg.Column(da_right, pad=(6,6))]],
+        da_header + [[sg.Column(da_left, pad=(6, 6)), sg.Text("   "), sg.Column(da_right, pad=(6, 6))]],
         relief=sg.RELIEF_GROOVE, border_width=2,
         background_color="#1B1B1B", title_color="#9EE493",
         expand_x=False, expand_y=False
@@ -545,11 +896,12 @@ def main():
     ]
     monthly_scoreboard = sg.Frame(
         "",
-        mo_header + [[sg.Column(mo_col, pad=(6,6))]],  # column layout (single column)
+        mo_header + [[sg.Column(mo_col, pad=(6, 6))]],
         relief=sg.RELIEF_GROOVE, border_width=2,
         background_color="#1B1B1B", title_color="#9EE493",
         expand_x=False, expand_y=False
     )
+    # ================== /SCOREBOARD WIDGETS ==================
 
     # -------- Email Leads tab (host frame for tksheet) --------
     leads_host = sg.Frame(
@@ -569,7 +921,7 @@ def main():
         sg.Text("Idle", key="-STATUS-", text_color="#FFFFFF"),
     ]
     leads_buttons_row2 = [
-        sg.Button("Fire the Death Star", key="-FIRE-", size=(25,2), disabled=True, button_color=("white","#700000")),
+        sg.Button("Fire the Death Star", key="-FIRE-", size=(25, 2), disabled=True, button_color=("white", "#700000")),
         sg.Text(" (disabled: add valid NEW leads)", key="-FIRE_HINT-", text_color="#BBBBBB")
     ]
 
@@ -577,64 +929,122 @@ def main():
         [leads_host],
         [sg.Text("Columns / placeholders:", text_color="#CCCCCC")],
         [sg.Text(", ".join(HEADER_FIELDS), text_color="#9EE493", font=("Consolas", 9))],
-        [sg.Column([leads_buttons_row1], pad=(0,0))],
-        [sg.Column([leads_buttons_row2], pad=(0,0))],
+        [sg.Column([leads_buttons_row1], pad=(0, 0))],
+        [sg.Column([leads_buttons_row2], pad=(0, 0))],
     ]
 
-    # -------- Email Templates tab --------
-    def tpl_val(k): return templates.get(k,"")
-    def sub_val(k): return subjects.get(k, DEFAULT_SUBJECTS.get(k, DEFAULT_SUBJECT))
-    known_keys = list(templates.keys())
-
-    tpl_rows = []
-    order = ["default","butcher_shop","farm_orchard"] + [k for k in known_keys if k not in ("default","butcher_shop","farm_orchard")]
-    for key in order:
-        body_height = 8 if key in ("butcher_shop","farm_orchard") else 6
-        tpl_rows += [
-            [sg.Text(key, size=(18,1), text_color="#CCCCCC")],
+    # -------- Email Campaigns tab (empty state + editor + saved list) --------
+    def _step_row(i, step):
+        body_h = 6 if i == 1 else 5
+        return [
+            [sg.Text(f"Step {i}", text_color="#CCCCCC")],
             [sg.Column([[sg.Text("Subject", text_color="#9EE493")],
-                        [sg.Input(default_text=sub_val(key), key=f"-SUBJ_{key}-", size=(48,1), enable_events=True)]], pad=(0,0)),
+                        [sg.Input(default_text=step.get("subject", ""), key=f"-CAMP_SUBJ_{i}-", size=(48, 1), enable_events=True)]], pad=(0, 0)),
              sg.Text("   "),
              sg.Column([[sg.Text("Body", text_color="#9EE493")],
-                        [sg.Multiline(default_text=tpl_val(key), key=f"-TPL_{key}-", size=(90, body_height),
-                                      font=("Consolas",10), text_color="#EEE", background_color="#111", enable_events=True)]],
-                       pad=(0,0), expand_x=True)]
+                        [sg.Multiline(default_text=step.get("body", ""), key=f"-CAMP_BODY_{i}-",
+                                      size=(90, body_h), font=("Consolas", 10),
+                                      text_color="#EEE", background_color="#111", enable_events=True)]], pad=(0, 0), expand_x=True)],
+            [sg.Text("Delay (days) after previous send:", text_color="#CCCCCC"),
+             sg.Input(default_text=str(step.get("delay_days", "0")), key=f"-CAMP_DELAY_{i}-", size=(6, 1), enable_events=True)],
+            [sg.HorizontalSeparator(color="#333333")]
         ]
 
-    tpl_tab = [
-        [sg.Text("Templates support ANY header as {Placeholder}. {First Name} falls back to 'there' if blank.", text_color="#CCCCCC")],
-        *tpl_rows,
-        [sg.HorizontalSeparator(color="#4CAF50")],
-        [sg.Text("Industry → Template mapping (needle -> template_key). Case-insensitive substring match.", text_color="#CCCCCC")],
-        [sg.Multiline(default_text="\n".join([f"{k} -> {v}" for k,v in mapping.items()]) if mapping else "",
-                      key="-MAP-", size=(120,6), font=("Consolas",10),
-                      text_color="#EEE", background_color="#111", enable_events=True)],
-        [sg.Button("Save Templates & Mapping", key="-SAVETPL-"),
-         sg.Button("Reset to Defaults", key="-RESETTPL-"),
+    camp_rows = []
+    for idx in range(1, 4):
+        step = camp_steps[idx-1] if idx-1 < len(camp_steps) else {"subject": "", "body": "", "delay_days": "0"}
+        camp_rows += _step_row(idx, step)
+
+    send_to_dialer_default = str(camp_settings.get("send_to_dialer_after", "1")).strip() in ("1", "true", "yes", "on")
+
+    # Helper: does any saved campaign actually have content?
+    def _any_populated_campaign():
+        try:
+            for k in campaign_keys:
+                stps, _st = load_campaign_by_key(k)
+                stps = normalize_campaign_steps(stps)
+                if any((s.get("subject") or s.get("body")) for s in stps):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    any_campaigns_populated = _any_populated_campaign()
+
+    # Active campaigns table data (may be empty)
+    try:
+        _camp_table_rows = [summarize_campaign_for_table(k) for k in campaign_keys]
+    except Exception:
+        _camp_table_rows = []
+
+    # Empty state header (shown when no campaigns yet)
+    empty_state = [
+        [sg.Text("No campaigns available yet.", text_color="#CCCCCC", key="-CAMP_EMPTY_MSG-")],
+        [sg.Button("➕  Add New Campaign", key="-CAMP_ADD_NEW-", button_color=("white", "#2E7D32"))]
+    ]
+
+    # Editor header (hidden until user clicks Add New or loads one)
+    editor_header = [
+        [sg.Text("Campaign niche / industry:", text_color="#9EE493"),
+         sg.Combo(values=campaign_keys, default_value=current_campaign_key, key="-CAMP_KEY-", size=(28, 1), enable_events=True),
+         sg.Button("New",  key="-CAMP_NEW-"),
+         sg.Button("Load", key="-CAMP_LOAD-"),
+         sg.Button("Save Campaign", key="-CAMP_SAVE-", button_color=("white", "#2E7D32")),
+         sg.Button("Delete This Campaign", key="-CAMP_DELETE-", button_color=("white", "#8B0000")),
          sg.Push(),
-         sg.Button("＋ Add New Template", key="-ADDNEW-", button_color=("white","#2E7D32")),
-         sg.Button("Reload Templates", key="-RELOADTPL-"),
-         sg.Text("", key="-TPL_STATUS-", text_color="#A0FFA0")]
+         sg.Text("", key="-CAMP_STATUS-", text_color="#A0FFA0")]
+    ]
+
+    # Compose the campaigns tab with two sections we can show/hide at runtime
+    campaigns_tab = [
+        [sg.Text("Email Campaigns let you schedule up to 3 follow-ups. Drafts are created based on the *DateSent* in Email Results, not draft time.", text_color="#CCCCCC")],
+        [sg.Text("If a prospect replies or is marked Green on Email Results, they’re removed from the campaign automatically.", text_color="#AAAAAA")],
+
+        # Empty state section
+        [sg.Column(empty_state, key="-CAMP_EMPTY_WRAP-", visible=not any_campaigns_populated)],
+
+        # Editor section
+        [sg.Column(
+            editor_header
+            + camp_rows
+            + [[sg.Checkbox("Send to Dialer automatically if they complete the campaign without replying",
+                            key="-CAMP_SEND_TO_DIALER-", default=send_to_dialer_default, text_color="#EEEEEE")],
+               [sg.Button("Reset to Defaults", key="-CAMP_RESET-"),
+                sg.Button("Reload", key="-CAMP_RELOAD-")]],
+            key="-CAMP_EDITOR_WRAP-", visible=any_campaigns_populated, expand_x=True
+        )],
+
+        [sg.HorizontalSeparator(color="#4CAF50")],
+        [sg.Text("Saved Campaigns", text_color="#9EE493")],
+        [sg.Table(values=_camp_table_rows,
+                  headings=["Campaign", "Enabled Steps", "Delays (days)", "To Dialer", "Auto Sync", "Hourly Runner"],
+                  auto_size_columns=False, col_widths=[24, 14, 18, 10, 10, 14], justification="left", num_rows=8,
+                  key="-CAMP_TABLE-", enable_events=True, alternating_row_color="#2a2a2a",
+                  text_color="#EEE", background_color="#111", header_text_color="#FFF", header_background_color="#333")],
+        [sg.Button("Refresh List", key="-CAMP_REFRESH_LIST-")]
     ]
 
     # -------- Email Results tab --------
     def results_table_data():
         rows = load_results_rows_sorted()
-        data = [[r.get("Ref",""), r.get("Email",""), r.get("Company",""), r.get("Industry",""),
-                 r.get("DateSent",""), r.get("DateReplied",""), r.get("Status",""), r.get("Subject","")] for r in rows]
+        data = [[r.get("Ref", ""), r.get("Email", ""), r.get("Company", ""), r.get("Industry", ""),
+                 r.get("DateSent", ""), r.get("DateReplied", ""), r.get("Status", ""), r.get("Subject", "")] for r in rows]
         return rows, data
+
     rs_rows, rs_data = results_table_data()
     results_tab = [
         [sg.Text("Sync replies from Outlook; tag Green (good), Gray (neutral), Red (negative).", text_color="#CCCCCC")],
-        [sg.Text("Lookback days:", text_color="#CCCCCC"), sg.Input("60", key="-LOOKBACK-", size=(6,1)),
-         sg.Button("Sync from Outlook", key="-SYNC-"), sg.Text("", key="-RS_STATUS-", text_color="#A0FFA0")],
-        [sg.Table(values=rs_data, headings=["Ref","Email","Company","Industry","DateSent","DateReplied","Status","Subject"],
-                  auto_size_columns=False, col_widths=[10,26,26,14,18,18,8,40], justification="left", num_rows=15,
+        [sg.Text("Lookback days:", text_color="#CCCCCC"), sg.Input("60", key="-LOOKBACK-", size=(6, 1)),
+         sg.Button("Sync from Outlook", key="-SYNC-"),
+         sg.Checkbox("Auto Sync (hourly)", key="-AUTO_SYNC-", default=False, text_color="#EEEEEE"),
+         sg.Text("", key="-RS_STATUS-", text_color="#A0FFA0")],
+        [sg.Table(values=rs_data, headings=["Ref", "Email", "Company", "Industry", "DateSent", "DateReplied", "Status", "Subject"],
+                  auto_size_columns=False, col_widths=[10, 26, 26, 14, 18, 18, 8, 40], justification="left", num_rows=15,
                   key="-RSTABLE-", enable_events=True, alternating_row_color="#2a2a2a",
                   text_color="#EEE", background_color="#111", header_text_color="#FFF", header_background_color="#333")],
-        [sg.Button("Mark Green", key="-MARK_GREEN-", button_color=("white","#2E7D32")),
-         sg.Button("Mark Gray",  key="-MARK_GRAY-",  button_color=("black","#DDDDDD")),
-         sg.Button("Mark Red",   key="-MARK_RED-",   button_color=("white","#C62828")),
+        [sg.Button("Mark Green", key="-MARK_GREEN-", button_color=("white", "#2E7D32")),
+         sg.Button("Mark Gray",  key="-MARK_GRAY-",  button_color=("black", "#DDDDDD")),
+         sg.Button("Mark Red",   key="-MARK_RED-",   button_color=("white", "#C62828")),
          sg.Text("   Warm Leads:", text_color="#A0A0A0"), sg.Text("0", key="-WARM-", text_color="#9EE493"),
          sg.Text("   Replies:", text_color="#A0A0A0"), sg.Text("0 / 0", key="-REPLRATE-", text_color="#FFFFFF")]
     ]
@@ -643,7 +1053,7 @@ def main():
     ensure_dialer_files()
     ensure_no_interest_file()
 
-    DIALER_EXTRA_COLS = ["🙂","😐","☹️","Note1","Note2","Note3","Note4","Note5","Note6","Note7","Note8"]
+    DIALER_EXTRA_COLS = ["🙂", "😐", "☹️", "Note1", "Note2", "Note3", "Note4", "Note5", "Note6", "Note7", "Note8"]
     DIALER_HEADERS = HEADER_FIELDS + DIALER_EXTRA_COLS
 
     try:
@@ -652,10 +1062,10 @@ def main():
         dialer_matrix = load_dialer_matrix_from_email_csv()
         if not dialer_matrix:
             dialer_matrix = [[""] * len(HEADER_FIELDS) for _ in range(50)]
-        dialer_matrix = [row + ["○","○","○"] + ([""]*8) for row in dialer_matrix]
+        dialer_matrix = [row + ["○", "○", "○"] + ([""] * 8) for row in dialer_matrix]
 
     if len(dialer_matrix) < 100:
-        dialer_matrix += [[""] * len(HEADER_FIELDS) + ["○","○","○"] + ([""]*8)
+        dialer_matrix += [[""] * len(HEADER_FIELDS) + ["○", "○", "○"] + ([""] * 8)
                           for _ in range(100 - len(dialer_matrix))]
 
     dialer_host = sg.Frame(
@@ -667,13 +1077,13 @@ def main():
 
     dialer_controls_right = [
         [sg.Text("Outcome:", text_color="#CCCCCC")],
-        [sg.Button("🟢 Green", key="-DIAL_SET_GREEN-", button_color=("white","#2E7D32"), size=(14,1))],
-        [sg.Button("⚪ Gray",  key="-DIAL_SET_GRAY-",  button_color=("black","#DDDDDD"), size=(14,1))],
-        [sg.Button("🔴 Red",   key="-DIAL_SET_RED-",   button_color=("white","#C62828"), size=(14,1))],
-        [sg.Text("Note:", text_color="#CCCCCC", pad=((0,0),(10,0)))],
-        [sg.Multiline(key="-DIAL_NOTE-", size=(28,6), font=("Consolas",10), background_color="#111", text_color="#EEE")],
-        [sg.Button("Confirm Call", key="-DIAL_CONFIRM-", size=(16,2), disabled=True, button_color=("white","#444444"))],
-        [sg.Text("", key="-DIAL_MSG-", text_color="#A0FFA0", size=(28,2))]
+        [sg.Button("🟢 Green", key="-DIAL_SET_GREEN-", button_color=("white", "#2E7D32"), size=(14, 1))],
+        [sg.Button("⚪ Gray",  key="-DIAL_SET_GRAY-",  button_color=("black", "#DDDDDD"), size=(14, 1))],
+        [sg.Button("🔴 Red",   key="-DIAL_SET_RED-",   button_color=("white", "#C62828"), size=(14, 1))],
+        [sg.Text("Note:", text_color="#CCCCCC", pad=((0, 0), (10, 0)))],
+        [sg.Multiline(key="-DIAL_NOTE-", size=(28, 6), font=("Consolas", 10), background_color="#111", text_color="#EEE")],
+        [sg.Button("Confirm Call", key="-DIAL_CONFIRM-", size=(16, 2), disabled=True, button_color=("white", "#444444"))],
+        [sg.Text("", key="-DIAL_MSG-", text_color="#A0FFA0", size=(28, 2))]
     ]
 
     dialer_buttons_under = [
@@ -682,9 +1092,9 @@ def main():
 
     dialer_tab = [
         [sg.Column([[dialer_host],
-                    [sg.Column([dialer_buttons_under], pad=(0,0))]],
+                    [sg.Column([dialer_buttons_under], pad=(0, 0))]],
                    expand_x=True, expand_y=True),
-         sg.Column(dialer_controls_right, vertical_alignment="top", pad=((10,0),(0,0)))]
+         sg.Column(dialer_controls_right, vertical_alignment="top", pad=((10, 0), (0, 0)))]
     ]
 
     # -------- Warm Leads tab --------
@@ -697,13 +1107,13 @@ def main():
 
     warm_controls_right = [
         [sg.Text("Outcome:", text_color="#CCCCCC")],
-        [sg.Button("🟢 Green", key="-WARM_SET_GREEN-", button_color=("white","#2E7D32"), size=(14,1))],
-        [sg.Button("⚪ Gray",  key="-WARM_SET_GRAY-",  button_color=("black","#DDDDDD"), size=(14,1))],
-        [sg.Button("🔴 Red",   key="-WARM_SET_RED-",   button_color=("white","#C62828"), size=(14,1))],
-        [sg.Text("Note:", text_color="#CCCCCC", pad=((0,0),(10,0)))],
-        [sg.Multiline(key="-WARM_NOTE-", size=(28,6), font=("Consolas",10), background_color="#111", text_color="#EEE")],
-        [sg.Button("Confirm", key="-WARM_CONFIRM-", size=(16,2), disabled=True, button_color=("white","#444444"))],
-        [sg.Text("", key="-WARM_STATUS_SIDE-", text_color="#A0FFA0", size=(28,2))],
+        [sg.Button("🟢 Green", key="-WARM_SET_GREEN-", button_color=("white", "#2E7D32"), size=(14, 1))],
+        [sg.Button("⚪ Gray",  key="-WARM_SET_GRAY-",  button_color=("black", "#DDDDDD"), size=(14, 1))],
+        [sg.Button("🔴 Red",   key="-WARM_SET_RED-",   button_color=("white", "#C62828"), size=(14, 1))],
+        [sg.Text("Note:", text_color="#CCCCCC", pad=((0, 0), (10, 0)))],
+        [sg.Multiline(key="-WARM_NOTE-", size=(28, 6), font=("Consolas", 10), background_color="#111", text_color="#EEE")],
+        [sg.Button("Confirm", key="-WARM_CONFIRM-", size=(16, 2), disabled=True, button_color=("white", "#444444"))],
+        [sg.Text("", key="-WARM_STATUS_SIDE-", text_color="#A0FFA0", size=(28, 2))],
     ]
 
     warm_buttons_under = [
@@ -711,15 +1121,15 @@ def main():
         sg.Button("Export Warm Leads CSV", key="-WARM_EXPORT-"),
         sg.Button("Reload Warm", key="-WARM_RELOAD-"),
         sg.Button("Add 100 Rows", key="-WARM_ADD100-"),
-        sg.Button("→ Confirm New Customer", key="-WARM_MARK_CUSTOMER-", button_color=("white","#2E7D32")),
+        sg.Button("→ Confirm New Customer", key="-WARM_MARK_CUSTOMER-", button_color=("white", "#2E7D32")),
         sg.Text("", key="-WARM_STATUS-", text_color="#A0FFA0"),
     ]
 
     warm_tab = [
         [sg.Column([[warm_host],
-                    [sg.Column([warm_buttons_under], pad=(0,0))]],
+                    [sg.Column([warm_buttons_under], pad=(0, 0))]],
                    expand_x=True, expand_y=True),
-         sg.Column(warm_controls_right, vertical_alignment="top", pad=((10,0),(0,0)))]
+         sg.Column(warm_controls_right, vertical_alignment="top", pad=((10, 0), (0, 0)))]
     ]
 
     # -------- Customers tab (grid + analytics panel on right) --------
@@ -743,7 +1153,6 @@ def main():
         sg.Text("", key="-CUST_STATUS-", text_color="#A0FFA0")
     ]
 
-    # ---- Analytics panel (right side) ----
     an_customer = [
         [sg.Text("CUSTOMER ANALYTICS", text_color="#9EE493")],
         [sg.Text("Total Sales"),  sg.Text("0.00", key="-AN_TOTALSALES-", text_color="#A0FFA0")],
@@ -763,8 +1172,8 @@ def main():
 
     analytics_panel = sg.Frame(
         "",
-        [[sg.Column(an_customer, pad=(6,6), expand_x=True, expand_y=False)],
-         [sg.Column(an_pipeline, pad=(6,0), expand_x=True, expand_y=False)]],
+        [[sg.Column(an_customer, pad=(6, 6), expand_x=True, expand_y=False)],
+         [sg.Column(an_pipeline, pad=(6, 0), expand_x=True, expand_y=False)]],
         relief=sg.RELIEF_GROOVE, border_width=2,
         background_color="#1B1B1B", title_color="#9EE493",
         expand_x=False, expand_y=False
@@ -772,24 +1181,36 @@ def main():
 
     customers_tab = [
         [sg.Column([[customers_host],
-                    [sg.Column([customers_buttons_under], pad=(0,0))]],
+                    [sg.Column([customers_buttons_under], pad=(0, 0))]],
                    expand_x=True, expand_y=True),
-         sg.Column([[analytics_panel]], vertical_alignment="top", pad=((10,0),(0,0)), size=(320, 340))]
+         sg.Column([[analytics_panel]],
+                   vertical_alignment="top",
+                   pad=((10, 0), (0, 0)),
+                   size=(320, 340))]
     ]
 
     # -------- Compose full layout --------
-    # Scoreboards row is GLOBAL (above tabs). Push() keeps them docked right.
-    scoreboards_row = [sg.Push(), daily_scoreboard, sg.Text("  "), monthly_scoreboard]
+    SB_LEFT_PAD = (500, 0)
+    SB_TOP_PAD  = (0, 6)
+
+    scoreboards_row = [
+        sg.Column(
+            [[daily_scoreboard, sg.Text("  "), monthly_scoreboard]],
+            pad=(SB_LEFT_PAD, SB_TOP_PAD),
+            background_color="#202020",
+            expand_x=False, expand_y=False
+        )
+    ]
 
     layout = [
         top_bar,
         scoreboards_row,
-        [sg.TabGroup([[sg.Tab("Email Leads",    leads_tab,   expand_x=True, expand_y=True),
-                       sg.Tab("Email Templates",tpl_tab,     expand_x=True, expand_y=True),
-                       sg.Tab("Email Results",  results_tab, expand_x=True, expand_y=True),
-                       sg.Tab("Dialer",         dialer_tab,  expand_x=True, expand_y=True),
-                       sg.Tab("Warm Leads",     warm_tab,    expand_x=True, expand_y=True),
-                       sg.Tab("Customers",      customers_tab, expand_x=True, expand_y=True)]],
+        [sg.TabGroup([[sg.Tab("Email Leads",     leads_tab,     expand_x=True, expand_y=True),
+                       sg.Tab("Email Campaigns", campaigns_tab, expand_x=True, expand_y=True),
+                       sg.Tab("Email Results",   results_tab,   expand_x=True, expand_y=True),
+                       sg.Tab("Dialer",          dialer_tab,    expand_x=True, expand_y=True),
+                       sg.Tab("Warm Leads",      warm_tab,      expand_x=True, expand_y=True),
+                       sg.Tab("Customers",       customers_tab, expand_x=True, expand_y=True)]],
                      expand_x=True, expand_y=True)]
     ]
 
@@ -808,8 +1229,10 @@ def main():
     # Email Leads sheet in leads_host
     host_frame_tk = leads_host.Widget
     for child in host_frame_tk.winfo_children():
-        try: child.destroy()
-        except Exception: pass
+        try:
+            child.destroy()
+        except Exception:
+            pass
     sheet_holder = sg.tk.Frame(host_frame_tk, bg="#111111")
     sheet_holder.pack(side="top", fill="both", expand=True)
 
@@ -818,7 +1241,7 @@ def main():
         with CSV_PATH.open("r", encoding="utf-8", newline="") as f:
             rdr = csv.DictReader(f)
             for r in rdr:
-                existing.append([r.get(h,"") for h in HEADER_FIELDS])
+                existing.append([r.get(h, "") for h in HEADER_FIELDS])
 
     if existing:
         data = existing + [[""] * len(HEADER_FIELDS) for _ in range(max(0, START_ROWS - len(existing)))]
@@ -833,11 +1256,11 @@ def main():
         show_y_scrollbar=True
     )
     sheet.enable_bindings((
-        "single_select","row_select","column_select",
-        "drag_select","column_drag_and_drop","row_drag_and_drop",
-        "copy","cut","delete","undo","edit_cell","return_edit_cell",
-        "select_all","right_click_popup_menu",
-        "column_width_resize","column_resize","resize_columns"
+        "single_select", "row_select", "column_select",
+        "drag_select", "column_drag_and_drop", "row_drag_and_drop",
+        "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
+        "select_all", "right_click_popup_menu",
+        "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         sheet.set_options(
@@ -850,8 +1273,10 @@ def main():
         pass
     sheet.pack(fill="both", expand=True)
     for c in range(len(HEADER_FIELDS)):
-        try: sheet.column_width(c, width=DEFAULT_COL_WIDTH)
-        except Exception: pass
+        try:
+            sheet.column_width(c, width=DEFAULT_COL_WIDTH)
+        except Exception:
+            pass
 
     _bind_plaintext_paste_for_tksheet(sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(sheet, window.TKroot)
@@ -860,8 +1285,10 @@ def main():
     # ---------- Dialer grid ----------
     dial_host_tk = dialer_host.Widget
     for child in dial_host_tk.winfo_children():
-        try: child.destroy()
-        except Exception: pass
+        try:
+            child.destroy()
+        except Exception:
+            pass
     dial_sheet_holder = sg.tk.Frame(dial_host_tk, bg="#111111")
     dial_sheet_holder.pack(side="top", fill="both", expand=True)
 
@@ -873,10 +1300,10 @@ def main():
         show_y_scrollbar=True
     )
     dial_sheet.enable_bindings((
-        "single_select","row_select","column_select",
-        "drag_select","copy","cut","delete","undo",
-        "edit_cell","return_edit_cell","select_all","right_click_popup_menu",
-        "column_width_resize","column_resize","resize_columns"
+        "single_select", "row_select", "column_select",
+        "drag_select", "copy", "cut", "delete", "undo",
+        "edit_cell", "return_edit_cell", "select_all", "right_click_popup_menu",
+        "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         dial_sheet.set_options(
@@ -893,8 +1320,11 @@ def main():
 
     # Set dialer column widths
     def _idx(colname, default=None):
-        try: return DIALER_HEADERS.index(colname)
-        except Exception: return default
+        try:
+            return DIALER_HEADERS.index(colname)
+        except Exception:
+            return default
+
     idx_address = _idx("Address", 6)
     idx_city    = _idx("City", 7)
     idx_state   = _idx("State", 8)
@@ -915,8 +1345,10 @@ def main():
             width = 36
         if first_note <= c <= last_note:
             width = 120
-        try: dial_sheet.column_width(c, width=width)
-        except Exception: pass
+        try:
+            dial_sheet.column_width(c, width=width)
+        except Exception:
+            pass
     _bind_plaintext_paste_for_tksheet(dial_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(dial_sheet, window.TKroot)
     _enable_column_resizing(dial_sheet)
@@ -924,8 +1356,10 @@ def main():
     # ---------- Warm grid (tksheet) ----------
     warm_host_tk = warm_host.Widget
     for child in warm_host_tk.winfo_children():
-        try: child.destroy()
-        except Exception: pass
+        try:
+            child.destroy()
+        except Exception:
+            pass
     warm_holder = sg.tk.Frame(warm_host_tk, bg="#111111")
     warm_holder.pack(side="top", fill="both", expand=True)
 
@@ -965,11 +1399,11 @@ def main():
         show_y_scrollbar=True
     )
     warm_sheet.enable_bindings((
-        "single_select","row_select","column_select",
-        "drag_select","column_drag_and_drop","row_drag_and_drop",
-        "copy","cut","delete","undo","edit_cell","return_edit_cell",
-        "select_all","right_click_popup_menu",
-        "column_width_resize","column_resize","resize_columns"
+        "single_select", "row_select", "column_select",
+        "drag_select", "column_drag_and_drop", "row_drag_and_drop",
+        "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
+        "select_all", "right_click_popup_menu",
+        "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         warm_sheet.set_options(
@@ -984,13 +1418,15 @@ def main():
 
     for c, name in enumerate(headers_for_warm):
         width = 120
-        if name in ("Company","Prospect Name"): width = 180
-        if name in ("Phone #","Rep","Samples?"): width = 90
-        if name in ("Email","Google Reviews","Industry","Location"): width = 160
+        if name in ("Company", "Prospect Name"): width = 180
+        if name in ("Phone #", "Rep", "Samples?"): width = 90
+        if name in ("Email", "Google Reviews", "Industry", "Location"): width = 160
         if name.endswith("Date"): width = 110
-        if name in ("First Contact","Timestamp","Cost ($)"): width = 120
-        try: warm_sheet.column_width(c, width=width)
-        except Exception: pass
+        if name in ("First Contact", "Timestamp", "Cost ($)"): width = 120
+        try:
+            warm_sheet.column_width(c, width=width)
+        except Exception:
+            pass
 
     _bind_plaintext_paste_for_tksheet(warm_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(warm_sheet, window.TKroot)
@@ -999,8 +1435,10 @@ def main():
     # ---------- Customers grid (tksheet) ----------
     cust_host_tk = customers_host.Widget
     for child in cust_host_tk.winfo_children():
-        try: child.destroy()
-        except Exception: pass
+        try:
+            child.destroy()
+        except Exception:
+            pass
     cust_holder = sg.tk.Frame(customers_host.Widget, bg="#111111")
     cust_holder.pack(side="top", fill="both", expand=True)
 
@@ -1029,11 +1467,11 @@ def main():
         show_y_scrollbar=True
     )
     customer_sheet.enable_bindings((
-        "single_select","row_select","column_select",
-        "drag_select","column_drag_and_drop","row_drag_and_drop",
-        "copy","cut","delete","undo","edit_cell","return_edit_cell",
-        "select_all","right_click_popup_menu",
-        "column_width_resize","column_resize","resize_columns"
+        "single_select", "row_select", "column_select",
+        "drag_select", "column_drag_and_drop", "row_drag_and_drop",
+        "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
+        "select_all", "right_click_popup_menu",
+        "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         customer_sheet.set_options(
@@ -1048,12 +1486,14 @@ def main():
 
     for c, name in enumerate(CUSTOMER_FIELDS):
         width = 120
-        if name in ("Company","Prospect Name"): width = 180
-        if name in ("Phone #","Rep","Samples?"): width = 90
-        if name in ("Email","Google Reviews","Industry","Location"): width = 160
-        if name in ("Opening Order $","Customer Since","Timestamp"): width = 150
-        try: customer_sheet.column_width(c, width=width)
-        except Exception: pass
+        if name in ("Company", "Prospect Name"): width = 180
+        if name in ("Phone #", "Rep", "Samples?"): width = 90
+        if name in ("Email", "Google Reviews", "Industry", "Location"): width = 160
+        if name in ("Opening Order $", "Customer Since", "Timestamp"): width = 150
+        try:
+            customer_sheet.column_width(c, width=width)
+        except Exception:
+            pass
 
     _bind_plaintext_paste_for_tksheet(customer_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(customer_sheet, window.TKroot)
@@ -1079,8 +1519,9 @@ def main():
         except Exception:
             pass
     print(">>> EXITING main()")
-# ===== CHUNK 2 / 5 — END =====
-# ===== CHUNK 3 / 5 — START =====
+
+# ===== CHUNK 2 / 6 — END =====
+# ===== CHUNK 3 / 6 — START =====
 # ============================================================
 # CSV I/O
 # ============================================================
@@ -1093,6 +1534,7 @@ def load_csv_to_matrix():
         data = list(csv.reader(f))
     if not data:
         return rows
+
     for row in data[1:]:
         rows.append((row + [""] * len(HEADER_FIELDS))[:len(HEADER_FIELDS)])
     return rows
@@ -1516,10 +1958,148 @@ def blocks_to_html(text):
 
 
 # ============================================================
-# Outlook helpers
+# Campaigns helpers (storage + queue)
 # ============================================================
 
-REF_RE = re.compile(r"\[ref:([0-9a-f]{6,12})\]", re.IGNORECASE)
+# Files
+CAMPAIGNS_PATH = APP_DIR / "campaigns.csv"     # per-ref state
+CAMPAIGNS_INI_PATH = APP_DIR / "campaigns.ini" # campaign definitions (per key)
+
+CAMPAIGNS_HEADERS = ["Ref","Email","Company","CampaignKey","Stage","DivertToDialer"]
+
+def ensure_campaigns_file():
+    if not CAMPAIGNS_PATH.exists():
+        with CAMPAIGNS_PATH.open("w", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerow(CAMPAIGNS_HEADERS)
+
+def _read_campaign_rows():
+    ensure_campaigns_file()
+    rows = []
+    with CAMPAIGNS_PATH.open("r", encoding="utf-8", newline="") as f:
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            rows.append(r)
+    return rows
+
+def _write_campaign_rows(rows):
+    _backup(CAMPAIGNS_PATH)
+    with CAMPAIGNS_PATH.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CAMPAIGNS_HEADERS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({h: r.get(h,"") for h in CAMPAIGNS_HEADERS})
+
+def upsert_campaign_row(ref_short, email, company, campaign_key, stage=0, divert_to_dialer=0):
+    rows = _read_campaign_rows()
+    ref_l = (ref_short or "").lower()
+    found = False
+    for r in rows:
+        if (r.get("Ref","") or "").lower() == ref_l:
+            r["Email"] = email or r.get("Email","")
+            r["Company"] = company or r.get("Company","")
+            r["CampaignKey"] = campaign_key or r.get("CampaignKey","default")
+            r["Stage"] = str(stage)
+            r["DivertToDialer"] = "1" if int(divert_to_dialer or 0) else "0"
+            found = True
+            break
+    if not found:
+        rows.append({
+            "Ref": ref_short, "Email": email or "", "Company": company or "",
+            "CampaignKey": campaign_key or "default", "Stage": str(stage),
+            "DivertToDialer": "1" if int(divert_to_dialer or 0) else "0"
+        })
+    _write_campaign_rows(rows)
+
+def remove_campaign_by_ref(ref_short):
+    rows = _read_campaign_rows()
+    ref_l = (ref_short or "").lower()
+    rows = [r for r in rows if (r.get("Ref","") or "").lower() != ref_l]
+    _write_campaign_rows(rows)
+
+def get_campaign_row(ref_short):
+    ref_l = (ref_short or "").lower()
+    for r in _read_campaign_rows():
+        if (r.get("Ref","") or "").lower() == ref_l:
+            return r
+    return None
+
+def set_campaign_stage(ref_short, new_stage):
+    rows = _read_campaign_rows()
+    ref_l = (ref_short or "").lower()
+    for r in rows:
+        if (r.get("Ref","") or "").lower() == ref_l:
+            r["Stage"] = str(new_stage)
+            break
+    _write_campaign_rows(rows)
+
+# Campaign definitions (per key)
+# campaigns.ini layout:
+# [default]
+# e1_subject=...
+# e1_body=...
+# e1_delay_days=0
+# e2_subject=...
+# e2_body=...
+# e2_delay_days=3
+# e3_subject=...
+# e3_body=...
+# e3_delay_days=7
+# divert_to_dialer=1
+def ensure_campaigns_ini(templates=None, subjects=None):
+    """Create campaigns.ini with defaults derived from existing template/defaults if missing."""
+    if CAMPAIGNS_INI_PATH.exists():
+        return
+    cfg = configparser.ConfigParser()
+    # Seed basic keys from template/subject defaults
+    tpls = templates or DEFAULT_TEMPLATES
+    subs = subjects or DEFAULT_SUBJECTS
+    def _seed(section_name):
+        cfg[section_name] = {
+            "e1_subject": subs.get(section_name, subs.get("default", DEFAULT_SUBJECT)),
+            "e1_body": tpls.get(section_name, tpls.get("default","")),
+            "e1_delay_days": "0",
+            "e2_subject": subs.get(section_name, subs.get("default", DEFAULT_SUBJECT)),
+            "e2_body": tpls.get(section_name, tpls.get("default","")),
+            "e2_delay_days": "3",
+            "e3_subject": subs.get(section_name, subs.get("default", DEFAULT_SUBJECT)),
+            "e3_body": tpls.get(section_name, tpls.get("default","")),
+            "e3_delay_days": "7",
+            "divert_to_dialer": "0",
+        }
+    _seed("default")
+    _seed("butcher_shop")
+    _seed("farm_orchard")
+    with CAMPAIGNS_INI_PATH.open("w", encoding="utf-8") as f:
+        cfg.write(f)
+
+def load_campaigns_ini():
+    """Return dict: {key: {e1_subject, e1_body, e1_delay_days, e2_..., e3_..., divert_to_dialer}}."""
+    ensure_campaigns_ini()
+    cfg = configparser.ConfigParser()
+    cfg.read(CAMPAIGNS_INI_PATH, encoding="utf-8")
+    out = {}
+    for sec in cfg.sections():
+        it = cfg[sec]
+        def _i(name, default="0"): 
+            try: return int(it.get(name, default))
+            except Exception: return int(default)
+        out[sec] = {
+            "e1_subject": it.get("e1_subject",""),
+            "e1_body":    it.get("e1_body",""),
+            "e1_delay_days": _i("e1_delay_days","0"),
+            "e2_subject": it.get("e2_subject",""),
+            "e2_body":    it.get("e2_body",""),
+            "e2_delay_days": _i("e2_delay_days","3"),
+            "e3_subject": it.get("e3_subject",""),
+            "e3_body":    it.get("e3_body",""),
+            "e3_delay_days": _i("e3_delay_days","7"),
+            "divert_to_dialer": _i("divert_to_dialer","0"),
+        }
+    return out
+
+# ============================================================
+# Outlook helpers (extended for single draft by ref)
+# ============================================================
 
 def require_pywin32():
     try:
@@ -1548,6 +2128,32 @@ def pick_store(session):
                 store = st
                 break
     return store
+
+def outlook_draft_one(row_dict, subject_text, body_text, ref_short):
+    """Create a single Outlook draft to row_dict['Email'] with given subject/body and [ref:xxxx]."""
+    import win32com.client as win32
+    outlook = win32.Dispatch("Outlook.Application")
+    session = outlook.GetNamespace("MAPI")
+    store = pick_store(session)
+    drafts_root = store.GetDefaultFolder(16)  # olFolderDrafts
+    target_folder = None
+    for i in range(1, drafts_root.Folders.Count + 1):
+        f = drafts_root.Folders.Item(i)
+        if (f.Name or "").lower() == DEATHSTAR_SUBFOLDER.lower():
+            target_folder = f; break
+    if target_folder is None:
+        target_folder = drafts_root.Folders.Add(DEATHSTAR_SUBFOLDER)
+
+    body_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;"><div style="font-family:Segoe UI, Arial, sans-serif; font-size:14px; line-height:1.5; color:#111;">
+    {blocks_to_html(body_text)}<!-- ref:{ref_short} --></div></body></html>"""
+    msg = drafts_root.Items.Add("IPM.Note")
+    msg.To = row_dict.get("Email","")
+    msg.Subject = f"{subject_text} [ref:{ref_short}]"
+    msg.BodyFormat = 2
+    msg.HTMLBody = body_html
+    msg.Save()
+    msg.Move(target_folder)
 
 def outlook_draft_many(rows_matrix, seen_set, templates, subjects, mapping):
     import win32com.client as win32
@@ -1596,6 +2202,9 @@ def outlook_draft_many(rows_matrix, seen_set, templates, subjects, mapping):
             f.write(fp+"\n")
     return made
 
+# Remainder (state/results/sync) from original:
+REF_RE = re.compile(r"\[ref:([0-9a-f]{6,12})\]", re.IGNORECASE)
+
 def load_state_set():
     if not STATE_PATH.exists():
         return set()
@@ -1609,6 +2218,48 @@ def load_results_rows_sorted():
     def sk(r): return (r.get("DateReplied",""), r.get("DateSent",""))
     rows.sort(key=sk, reverse=True)
     return rows
+
+def _results_lookup_by_ref():
+    """Quick map: ref_lower -> row dict (results.csv)."""
+    rows = load_results_rows_sorted()
+    return { (r.get("Ref","") or "").lower(): r for r in rows }
+
+def _results_dates_for_ref(ref_short):
+    """Return (sent_dt, replied_dt) as datetime or (None,None)."""
+    r = _results_lookup_by_ref().get((ref_short or "").lower())
+    def _p(s):
+        s = (s or "").strip()
+        if not s: return None
+        dt = None
+        # try chunk 4's parser later; quick attempt here:
+        for fmt in ("%Y-%m-%d %H:%M:%S","%Y-%m-%d",
+                    "%m/%d/%Y %I:%M:%S %p","%m/%d/%Y %I:%M %p","%m/%d/%Y"):
+            try:
+                return datetime.strptime(s, fmt)
+            except Exception:
+                pass
+        return None
+    if not r:
+        return (None, None)
+    return (_p(r.get("DateSent","")), _p(r.get("DateReplied","")))
+
+def _lead_row_from_email_company(email, company):
+    """Try to find an original lead row in kybercrystals.csv for placeholders."""
+    if not CSV_PATH.exists():
+        return None
+    email_l = (email or "").strip().lower()
+    comp_l  = (company or "").strip().lower()
+    with CSV_PATH.open("r", encoding="utf-8", newline="") as f:
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            if email_l and (r.get("Email","").strip().lower() == email_l):
+                return r
+        if comp_l:
+            f.seek(0); next(rdr, None)  # rewind
+            for r in rdr:
+                if (r.get("Company","").strip().lower() == comp_l):
+                    return r
+    return None
 
 def outlook_sync_results(lookback_days=60):
     import win32com.client as win32
@@ -1657,107 +2308,15 @@ def outlook_sync_results(lookback_days=60):
     with RESULTS_PATH.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["Ref","Email","Company","Industry","DateSent","DateReplied","Status","Subject"])
         w.writeheader(); w.writerows(out)
+    # Stamp last sync time for Daily Activity popup
+    try:
+        LAST_SYNC_PATH.write_text(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+    except Exception:
+        pass
     return len(sent_map), len(reply_map)
 
-
-# ============================================================
-# In-window helpers, event loop, entry point
-# ============================================================
-
-# -------- Dialer helper shims (used by main_after_mount) --------
-def dialer_cols_info(_headers=None):
-    first_dot  = len(HEADER_FIELDS)          # 🙂/😐/☹️
-    last_dot   = first_dot + 2
-    first_note = len(HEADER_FIELDS) + 3      # Note1
-    last_note  = first_note + 7              # Note8
-    return {"first_dot": first_dot, "last_dot": last_dot,
-            "first_note": first_note, "last_note": last_note}
-
-_DOT_BG = {"green": "#2E7D32", "gray": "#9E9E9E", "red": "#C62828"}
-_DOT_FG = {"green": "#FFFFFF", "gray": "#000000", "red": "#FFFFFF"}
-
-def dialer_clear_dot_highlights(sheet, row, cols):
-    try:
-        for c in range(cols["first_dot"], cols["last_dot"]+1):
-            sheet.highlight_cells(row=row, column=c, bg=None, fg=None)
-    except Exception:
-        pass
-
-def dialer_colorize_outcome(sheet, row, outcome, cols=None):
-    if cols is None: cols = dialer_cols_info(None)
-    base = cols["first_dot"]
-    try:
-        for i in range(3):
-            sheet.set_cell_data(row, base+i, "○")
-        idx = {"green":0, "gray":1, "red":2}[outcome]
-        c = base + idx
-        sheet.set_cell_data(row, c, "●")
-        try:
-            sheet.highlight_cells(row=row, column=c, bg=_DOT_BG[outcome], fg=_DOT_FG[outcome])
-        except Exception:
-            pass
-        sheet.refresh()
-    except Exception:
-        pass
-
-def dialer_next_empty_note_col(sheet, row, cols=None):
-    if cols is None: cols = dialer_cols_info(None)
-    try:
-        r = sheet.get_row_data(row) or []
-    except Exception:
-        return None
-    for c in range(cols["first_note"], cols["last_note"]+1):
-        if c >= len(r) or not (r[c] or "").strip():
-            return c
-    return None
-
-def dialer_move_to_next_row(sheet, current_row):
-    try:
-        total = sheet.get_total_rows()
-    except Exception:
-        total = 0
-    nxt = current_row + 1 if total == 0 else min(current_row + 1, max(0, total - 1))
-    try:
-        sheet.set_currently_selected(nxt, 0)
-        sheet.see(nxt, 0)
-    except Exception:
-        pass
-    return nxt
-
-
-# -------------------- Warm helpers --------------------
-def warm_get_col_index_map():
-    """Return quick indices for WARM_V2_FIELDS."""
-    idx = {name: i for i, name in enumerate(WARM_V2_FIELDS)}
-    return {
-        "cost": idx.get("Cost ($)"),
-        "timestamp": idx.get("Timestamp"),
-        "first_call": idx.get("Call 1"),
-        "last_call": idx.get("Call 15"),
-    }
-
-def warm_next_empty_call_col(row_values, col_map):
-    """Find next empty Call N cell (1..15)."""
-    if not row_values: return None
-    c1, cN = col_map["first_call"], col_map["last_call"]
-    if c1 is None or cN is None: return None
-    for c in range(c1, cN+1):
-        cell = row_values[c] if c < len(row_values) else ""
-        if not (cell or "").strip():
-            return c
-    return None
-
-def warm_format_cost(val):
-    """Normalize to dollars string '123.45'. Keep empty if blank."""
-    s = (val or "").strip().replace(",", "")
-    if not s:
-        return ""
-    try:
-        return f"{float(s):.2f}"
-    except Exception:
-        return s  # leave as-is if non-numeric
-# ===== CHUNK 3 / 5 — END =====
-# ===== CHUNK 4 / 5 — START =====
+# ===== CHUNK 3 / 6 — END =====
+# ===== CHUNK 4 / 6 — START =====
 # ============================================================
 # Shared helpers (no hard dependency on live tksheet objects)
 # ============================================================
@@ -1975,626 +2534,515 @@ def show_daily_activity_popup():
             win["-DA_SALES-"].update(f"${_fmt_money(mm['sales_sum'])}  ({mm['orders_count']} orders)")
     win.close()
 
+
 # ============================================================
-# main_after_mount (part 1: helpers & analytics)
+# Campaign queue processor (draft follow-ups + divert to Dialer)
 # ============================================================
-def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
-    # ---------- extractors tied to the live sheets ----------
-    def matrix_from_sheet():
-        raw = sheet.get_sheet_data() or []
-        trimmed = []
-        for row in raw:
-            row = (list(row) + [""] * len(HEADER_FIELDS))[:len(HEADER_FIELDS)]
-            trimmed.append([str(c) for c in row])
-        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
-            trimmed.pop()
-        return trimmed
+def _campaign_get_lead_row_for_ref(crow):
+    """Return a dict of header->value for a lead row that matches campaign row."""
+    enr = _lead_row_from_email_company(crow.get("Email",""), crow.get("Company",""))
+    if not enr:
+        # fallback minimal dict
+        enr = {h:"" for h in HEADER_FIELDS}
+        enr["Email"] = crow.get("Email","")
+        enr["Company"] = crow.get("Company","")
+    return enr
 
-    def warm_matrix_from_sheet_v2():
-        raw = warm_sheet.get_sheet_data() or []
-        trimmed = []
-        for row in raw:
-            row = (list(row) + [""] * len(WARM_V2_FIELDS))[:len(WARM_V2_FIELDS)]
-            trimmed.append([str(c) for c in row])
-        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
-            trimmed.pop()
-        return trimmed
+def _campaign_stage_from_results_if_needed(ref_short, cur_stage):
+    """
+    If Stage==0 but results.csv already has a DateSent, auto-bump to Stage 1.
+    This keeps things consistent when app restarts after sending E1.
+    """
+    if int(cur_stage or 0) > 0:
+        return int(cur_stage)
+    sent_dt, _ = _results_dates_for_ref(ref_short)
+    return 1 if sent_dt else 0
 
-    def customers_matrix_from_sheet():
-        raw = customer_sheet.get_sheet_data() or []
-        trimmed = []
-        for row in raw:
-            row = (list(row) + [""] * len(CUSTOMER_FIELDS))[:len(CUSTOMER_FIELDS)]
-            trimmed.append([str(c) for c in row])
-        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
-            trimmed.pop()
-        return trimmed
+def process_campaign_queue():
+    """
+    Runs quick checks:
+      - If a ref has DateReplied -> remove from campaigns.
+      - If stage==0 and DateSent exists -> set stage=1.
+      - If stage==1 and sent_dt + e2.delay due and no reply -> draft E2, stage=2.
+      - If stage==2 and sent_dt + e3.delay due and no reply -> draft E3, stage=3.
+      - If stage==3 and no reply and divert flag==1 -> push to Dialer & remove.
+    """
+    ensure_campaigns_file()
+    cfg = load_campaigns_ini()
+    rows = _read_campaign_rows()
+    changed = False
 
-    # ----- dialer helpers / state -----
-    cols = dialer_cols_info(dial_sheet.headers() if hasattr(dial_sheet, "headers") else None)
-    state = {
-        "row": None,
-        "outcome": None,          # "green" | "gray" | "red" | None
-        "note_col_by_row": {},    # sticky preview slot: {row_idx: col_idx}
-        "colored_row": None,      # which row currently has the colored outcome dot
-    }
+    for r in rows[:]:
+        ref = r.get("Ref","")
+        key = r.get("CampaignKey","default")
+        divert = int(r.get("DivertToDialer","0") or 0)
+        stage = int(r.get("Stage","0") or 0)
 
-    def _row_selected(sheet_obj):
-        try:
-            sel = sheet_obj.get_selected_rows() or []
-            if sel:
-                return sel[0]
-        except Exception:
-            pass
-        try:
-            r, _ = sheet_obj.get_currently_selected()
-            if isinstance(r, int) and r >= 0:
-                return r
-        except Exception:
-            pass
-        return None
-
-    def _set_working_row(r):
-        state["row"] = r
-        try:
-            dial_sheet.set_currently_selected(r, 0)
-            dial_sheet.see(r, 0)
-        except Exception:
-            pass
-
-    def _current_note_text():
-        return (window["-DIAL_NOTE-"].get() or "").strip()
-
-    def _confirm_enabled():
-        r = state["row"]
-        if r is None:
-            return False
-        have_outcome = state["outcome"] in ("green","gray","red")
-        have_text    = bool(_current_note_text())
-        sticky = state["note_col_by_row"].get(r)
-        have_slot = (sticky is not None) or (dialer_next_empty_note_col(dial_sheet, r, cols) is not None)
-        return have_outcome and have_text and have_slot
-
-    def _update_confirm_button():
-        ok = _confirm_enabled()
-        window["-DIAL_CONFIRM-"].update(disabled=not ok, button_color=("white", "#2E7D32" if ok else "#444444"))
-
-    def _apply_outcome(r, which):
-        state["outcome"] = which
-        try:
-            xv = dial_sheet.MT.xview(); yv = dial_sheet.MT.yview()
-        except Exception:
-            xv = yv = None
-        try:
-            if state["colored_row"] is not None and state["colored_row"] != r:
-                dialer_clear_dot_highlights(dial_sheet, state["colored_row"], cols)
-        except Exception:
-            pass
-        f = cols["first_dot"]
-        try:
-            for i in range(3):
-                dial_sheet.set_cell_data(r, f+i, "○")
-            dial_sheet.set_cell_data(r, f + {"green":0,"gray":1,"red":2}[which], "●")
-            dialer_colorize_outcome(dial_sheet, r, which, cols)
-            dial_sheet.refresh()
-        finally:
-            try:
-                if xv: dial_sheet.MT.xview_moveto(xv[0])
-                if yv: dial_sheet.MT.yview_moveto(yv[0])
-            except Exception:
-                pass
-        state["colored_row"] = r
-        _update_confirm_button()
-
-    def _apply_note_preview(r):
-        txt = _current_note_text()
-        c = state["note_col_by_row"].get(r)
-        if c is None:
-            c = dialer_next_empty_note_col(dial_sheet, r, cols)
-            state["note_col_by_row"][r] = c
-        if c is None:
-            _update_confirm_button()
-            return
-        try:
-            xv = dial_sheet.MT.xview(); yv = dial_sheet.MT.yview()
-        except Exception:
-            xv = yv = None
-        try:
-            dial_sheet.set_cell_data(r, c, txt)
-            dial_sheet.refresh()
-        finally:
-            try:
-                if xv: dial_sheet.MT.xview_moveto(xv[0])
-                if yv: dial_sheet.MT.yview_moveto(yv[0])
-            except Exception:
-                pass
-        _update_confirm_button()
-
-    # --- persist dialer grid to CSV (full grid) ---
-    def _save_dialer_grid_to_csv():
-        try:
-            data = dial_sheet.get_sheet_data() or []
-        except Exception:
-            data = []
-        # Clip/pad to expected header length: HEADER_FIELDS + 3 + 8
-        expected_len = len(HEADER_FIELDS) + 3 + 8
-        matrix = []
-        for row in data:
-            r = (list(row) + [""] * expected_len)[:expected_len]
-            # normalize empty outcome cells to "○"
-            for i in range(len(HEADER_FIELDS), len(HEADER_FIELDS)+3):
-                r[i] = r[i] if (r[i] or "").strip() else "○"
-            matrix.append(r)
-        save_dialer_leads_matrix(matrix)
-
-    # prime the dialer selected row (first non-empty, else 0)
-    try:
-        if state["row"] is None:
-            r0 = _row_selected(dial_sheet)
-            if r0 is None:
-                r0 = 0
-            _set_working_row(r0)
-    except Exception:
-        pass
-
-    # ============================================================
-    # Warm tab state & helpers
-    # ============================================================
-    warm_state = {
-        "row": None,
-        "outcome": None,  # "green"|"gray"|"red"|None
-    }
-    warm_cols = warm_get_col_index_map()
-
-    def _warm_selected_row():
-        return _row_selected(warm_sheet)
-
-    def _warm_note_text():
-        return (window["-WARM_NOTE-"].get() or "").strip()
-
-    def _warm_confirm_enabled():
-        r = warm_state["row"]
-        if r is None: return False
-        if warm_state["outcome"] not in ("green","gray","red"): return False
-        if not _warm_note_text(): return False
-        # must have an empty Call slot available
-        try:
-            row_vals = warm_sheet.get_row_data(r) or []
-        except Exception:
-            row_vals = []
-        return warm_next_empty_call_col(row_vals, warm_cols) is not None
-
-    def _warm_update_confirm_button():
-        ok = _warm_confirm_enabled()
-        window["-WARM_CONFIRM-"].update(disabled=not ok, button_color=("white", "#2E7D32" if ok else "#444444"))
-
-    def _warm_set_row(r):
-        warm_state["row"] = r
-        try:
-            warm_sheet.set_currently_selected(r, 0)
-            warm_sheet.see(r, 0)
-        except Exception:
-            pass
-        _warm_update_confirm_button()
-
-    def _warm_apply_outcome(which):
-        warm_state["outcome"] = which
-        _warm_update_confirm_button()
-
-    def _warm_cost_normalize_in_row(r):
-        """Format Cost ($) in-place for a given row."""
-        ci = warm_cols["cost"]
-        if ci is None: return
-        try:
-            row_vals = warm_sheet.get_row_data(r) or []
-        except Exception:
-            return
-        val = row_vals[ci] if ci < len(row_vals) else ""
-        newv = warm_format_cost(val)
-        try:
-            warm_sheet.set_cell_data(r, ci, newv)
-            warm_sheet.refresh()
-        except Exception:
-            pass
-
-    def _save_warm_grid_to_csv_v2():
-        # Normalize all Cost ($) before save
-        try:
-            total = warm_sheet.get_total_rows()
-        except Exception:
-            total = 0
-        for r in range(total):
-            _warm_cost_normalize_in_row(r)
-        matrix = warm_matrix_from_sheet_v2()
-        save_warm_leads_matrix_v2(matrix)
-
-    # ============================================================
-    # Customers helpers (save / selection / add order / analytics)
-    # ============================================================
-    def _save_customers_grid_to_csv():
-        try:
-            matrix = customers_matrix_from_sheet()
-            save_customers_matrix(matrix)
-            window["-CUST_STATUS-"].update("Saved ✓")
-        except Exception as e:
-            window["-CUST_STATUS-"].update(f"Save error: {e}")
-
-    def _customer_selected_row():
-        return _row_selected(customer_sheet)
-
-    def _cust_idx(name, default=None):
-        try:
-            return CUSTOMER_FIELDS.index(name)
-        except Exception:
-            return default
-
-    def _popup_add_order(company):
-        """Modal dialog to collect Amount + Date. Returns (amount_str, date_str) or None."""
-        comp_disp = company or "(unknown)"
-        layout = [
-            [sg.Text(f"Add Order for: {comp_disp}", text_color="#9EE493")],
-            [sg.Text("Amount ($):", size=(12,1)), sg.Input(key="-AO_AMOUNT-", size=(20,1))],
-            [sg.Text("Order Date:", size=(12,1)), sg.Input(_dt.now().strftime("%Y-%m-%d"), key="-AO_DATE-", size=(20,1)),
-             sg.Text(" (YYYY-MM-DD or MM/DD/YYYY)", text_color="#AAAAAA")],
-            [sg.Push(), sg.Button("Cancel"), sg.Button("Add", button_color=("white","#2E7D32"))]
-        ]
-        win = sg.Window("Add Order", layout, modal=True, finalize=True)
-        amount, date_s = None, None
-        while True:
-            ev, vals = win.read()
-            if ev in (sg.WINDOW_CLOSE_ATTEMPTED_EVENT, sg.WIN_CLOSED, "Cancel"):
-                win.close()
-                return None
-            if ev == "Add":
-                amount = (vals.get("-AO_AMOUNT-","") or "").strip()
-                date_s = (vals.get("-AO_DATE-","") or "").strip()
-                if not amount:
-                    sg.popup_error("Amount is required.")
-                    continue
-                win.close()
-                return (amount, date_s)
-
-    # ---- analytics helpers ----
-    def _safe_update(key, text):
-        try:
-            if key in window.AllKeysDict:
-                window[key].update(text)
-        except Exception:
-            pass
-
-    def _orders_count_and_sum():
-        """Return (counts_by_company: {company:(count,sum)}, total_sales_sum)."""
-        counts = {}
-        total_sales = 0.0
-        if ORDERS_PATH.exists():
-            with ORDERS_PATH.open("r", encoding="utf-8", newline="") as f:
-                rdr = csv.DictReader(f)
-                for r in rdr:
-                    comp = (r.get("Company","") or "").strip()
-                    try:
-                        val = float(str(r.get("Amount","") or "0").replace(",","").strip() or "0")
-                    except Exception:
-                        val = 0.0
-                    total_sales += val
-                    if comp:
-                        c, s = counts.get(comp, (0, 0.0))
-                        counts[comp] = (c+1, s+val)
-        return counts, total_sales
-
-    def refresh_customer_analytics():
-        """
-        Pipeline metrics + CAC + LTV + Reorder rate.
-        - Warm leads: count rows in warm_leads.csv (v2) that look non-empty (Company or Email)
-        - Samples sum: sum of 'Cost ($)' in warm v2
-        - New customers: rows in customers.csv where 'Customer Since' is non-empty
-        - Close rate: new_customers / warm_leads
-        - CAC: samples_sum / max(1, new_customers)
-        - Avg LTV: average 'CLTV' across all customers with a numeric value
-        - Total Sales: sum of all orders in orders.csv
-        - CAC : LTV ratio shown as "<cac> : <avg_ltv>"
-        - Reorder rate: percent customers with Reorder? == 'Yes' (case-insensitive)
-        - Also auto-mark Reorder? to 'Yes' if orders count for company >= 2
-        """
-        # Warm counts / samples
-        warm_leads = 0
-        samples_sum = 0.0
-        try:
-            if WARM_LEADS_PATH.exists():
-                with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
-                    rdr = csv.DictReader(f)
-                    for r in rdr:
-                        non_empty = (r.get("Company","") or r.get("Email","") or "").strip()
-                        if non_empty:
-                            warm_leads += 1
-                        try:
-                            samples_sum += float((r.get("Cost ($)","") or "0").replace(",","").strip() or "0")
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-        # Customers stats
-        new_customers = 0
-        total_customers = 0
-        ltv_vals = []
-        reorder_yes = 0
-
-        orders_counts, total_sales_sum = _orders_count_and_sum()
-
-        # optionally mutate grid for Reorder? auto-update (>=2 orders)
-        idx_reorder = _cust_idx("Reorder?")
-        idx_company = _cust_idx("Company")
-
-        try:
-            rows = customer_sheet.get_sheet_data() or []
-        except Exception:
-            rows = []
-
-        # mirror on-disk too for correctness:
-        try:
-            if CUSTOMERS_PATH.exists():
-                with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
-                    rdr = csv.DictReader(f)
-                    disk_rows = list(rdr)
-            else:
-                disk_rows = []
-        except Exception:
-            disk_rows = []
-
-        # Build a map to update disk if needed
-        disk_changed = False
-
-        for r_idx, row in enumerate(rows):
-            rec = {CUSTOMER_FIELDS[i]: (row[i] if i < len(CUSTOMER_FIELDS) else "") for i in range(len(CUSTOMER_FIELDS))}
-            comp = (rec.get("Company","") or "").strip()
-            if not any((rec.get(h,"") or "").strip() for h in CUSTOMER_FIELDS):
-                continue
-            total_customers += 1
-            if (rec.get("Customer Since","") or "").strip():
-                new_customers += 1
-            # LTV
-            try:
-                v = float((rec.get("CLTV","") or "").replace(",","").strip())
-                if v > 0:
-                    ltv_vals.append(v)
-            except Exception:
-                pass
-            # Reorder? (explicit)
-            is_yes_now = (rec.get("Reorder?","") or "").strip().lower() == "yes"
-
-            # Auto YES if orders >= 2
-            oc = orders_counts.get(comp, (0, 0.0))[0] if comp else 0
-            if oc >= 2 and not is_yes_now:
-                # mark in grid
-                if idx_reorder is not None:
-                    try:
-                        customer_sheet.set_cell_data(r_idx, idx_reorder, "Yes")
-                        is_yes_now = True
-                    except Exception:
-                        pass
-                # also mark in disk mirror
-                for drow in disk_rows:
-                    if (drow.get("Company","") or "").strip() == comp:
-                        if (drow.get("Reorder?","") or "").strip().lower() != "yes":
-                            drow["Reorder?"] = "Yes"
-                            disk_changed = True
-
-            if is_yes_now:
-                reorder_yes += 1
-
-        # If we auto-updated "Reorder?" on-disk, write it
-        if disk_changed:
-            try:
-                _backup(CUSTOMERS_PATH)
-                _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, [[r.get(h,"") for h in CUSTOMER_FIELDS] for r in disk_rows])
-            except Exception:
-                pass
-
-        # Compute metrics for UI keys from Chunk 2
-        close_rate = (new_customers / warm_leads * 100.0) if warm_leads else 0.0
-        cac = (samples_sum / new_customers) if new_customers else 0.0
-        avg_ltv = (sum(ltv_vals) / len(ltv_vals)) if ltv_vals else 0.0
-        reorder_rate = (reorder_yes / total_customers * 100.0) if total_customers else 0.0
-
-        # Update labels safely (keys from Chunk 2)
-        _safe_update("-AN_WARMS-", str(warm_leads))
-        _safe_update("-AN_NEWCUS-", str(new_customers))
-        _safe_update("-AN_CLOSERATE-", f"{close_rate:.1f}%")
-        _safe_update("-AN_CAC-", f"{cac:.2f}")
-        _safe_update("-AN_LTV-", f"{avg_ltv:.2f}")
-        # Total Sales sum across all orders
-        _safe_update("-AN_TOTALSALES-", f"{total_sales_sum:.2f}")
-        # CAC : LTV formatted as a ratio-esque string
-        if cac > 0 and avg_ltv > 0:
-            _safe_update("-AN_CACLTV-", f"{cac:.2f} : {avg_ltv:.2f}")
-        else:
-            _safe_update("-AN_CACLTV-", "—")
-        _safe_update("-AN_REORDER-", f"{reorder_rate:.1f}%")
-# ===== CHUNK 4 / 5 — END =====
-# ===== CHUNK 5 / 5 — START =====
-# ============================================================
-# main_after_mount (live-grid logic + event loop)
-# + Daily / Monthly Scoreboards (auto-refresh every 5s; no "last synced")
-# ============================================================
-
-# ---------- Scoreboard helpers ----------
-from datetime import datetime as _dt
-
-def _safe_get(window, key):
-    try:
-        return window[key]
-    except Exception:
-        return None
-
-def _fmt_money(val):
-    try:
-        return f"${float(val):.2f}"
-    except Exception:
-        return "$0.00"
-
-def _parse_any_date(s):
-    """Return date() from a wide range of formats or None."""
-    if not s:
-        return None
-    s = str(s).strip()
-    if not s:
-        return None
-    s2 = s.replace(",", " ")
-    fmts = [
-        "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m-%d-%Y",
-        "%m/%d", "%m-%d",
-        "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M",
-        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %I:%M %p", "%m-%d-%Y %I:%M %p"
-    ]
-    for fmt in fmts:
-        try:
-            dt = _dt.strptime(s2, fmt)
-            if fmt in ("%m/%d", "%m-%d"):
-                dt = dt.replace(year=_dt.now().year)
-            return dt.date()
-        except Exception:
+        # reply?
+        _sent, _replied = _results_dates_for_ref(ref)
+        if _replied:
+            # remove from campaign immediately
+            rows.remove(r)
+            changed = True
             continue
-    try:
-        from dateutil import parser as _p  # optional
-        return _p.parse(s2).date()
-    except Exception:
-        return None
 
-def _file_rows(path):
-    """Yield DictReader rows from a CSV file if it exists."""
-    try:
-        if path.exists():
-            with path.open("r", encoding="utf-8", newline="") as f:
-                rdr = csv.DictReader(f)
-                for r in rdr:
-                    yield r
-    except Exception:
-        return
+        # bring stage up to 1 if first email actually sent
+        new_stage = _campaign_stage_from_results_if_needed(ref, stage)
+        if new_stage != stage:
+            r["Stage"] = str(new_stage); stage = new_stage; changed = True
 
-def _float_val(s):
-    try:
-        return float(str(s).replace("$","").replace(",","").strip() or "0")
-    except Exception:
-        return 0.0
+        # no campaign config? skip
+        camp = cfg.get(key, cfg.get("default", {}))
+        if not camp:
+            continue
 
-def compute_daily_metrics():
-    """Compute Daily Activity numbers from CSVs."""
-    today = _dt.now().date()
-
-    # Calls (dialer_results.csv)
-    calls = 0
-    for r in _file_rows(DIALER_RESULTS_PATH):
-        d = _parse_any_date(r.get("Timestamp",""))
-        if d == today:
-            calls += 1
-
-    # Emails sent today (results.csv -> DateSent)
-    emails = 0
-    for r in _file_rows(RESULTS_PATH):
-        d = _parse_any_date(r.get("DateSent",""))
-        if d == today:
-            emails += 1
-
-    # New warm leads today (prefer First Contact; fall back to Timestamp for older rows)
-    new_warm = 0
-    for r in _file_rows(WARM_LEADS_PATH):
-        d = _parse_any_date(r.get("First Contact","") or r.get("Timestamp",""))
-        if d == today:
-            new_warm += 1
-
-    # New accounts today (customers.csv -> Customer Since)
-    new_accounts = 0
-    for r in _file_rows(CUSTOMERS_PATH):
-        d = _parse_any_date(r.get("Customer Since",""))
-        if d == today:
-            new_accounts += 1
-
-    # Daily sales (orders.csv -> Order Date)
-    daily_sales = 0.0
-    for r in _file_rows(ORDERS_PATH):
-        d = _parse_any_date(r.get("Order Date",""))
-        if d == today:
-            daily_sales += _float_val(r.get("Amount",""))
-
-    return {
-        "calls": calls,
-        "emails": emails,
-        "new_warm": new_warm,
-        "new_accounts": new_accounts,
-        "daily_sales": daily_sales,
-    }
-
-def compute_monthly_metrics():
-    """Compute Monthly Results numbers for the current month."""
-    now = _dt.now()
-    y, m = now.year, now.month
-
-    # New Warm Leads this month
-    mo_warm = 0
-    for r in _file_rows(WARM_LEADS_PATH):
-        d = _parse_any_date(r.get("First Contact","") or r.get("Timestamp",""))
-        if d and d.year == y and d.month == m:
-            mo_warm += 1
-
-    # New Customers this month
-    mo_newcus = 0
-    for r in _file_rows(CUSTOMERS_PATH):
-        d = _parse_any_date(r.get("Customer Since",""))
-        if d and d.year == y and d.month == m:
-            mo_newcus += 1
-
-    # Total Sales this month
-    mo_sales = 0.0
-    for r in _file_rows(ORDERS_PATH):
-        d = _parse_any_date(r.get("Order Date",""))
-        if d and d.year == y and d.month == m:
-            mo_sales += _float_val(r.get("Amount",""))
-
-    return {
-        "mo_warm": mo_warm,
-        "mo_newcus": mo_newcus,
-        "mo_sales": mo_sales,
-    }
-
-def update_scoreboards(window):
-    """Refresh both Daily Activity and Monthly Results labels."""
-    try:
-        d = compute_daily_metrics()
-        m = compute_monthly_metrics()
-        if (el := _safe_get(window, "-DA_CALLS-")):   el.update(str(d["calls"]))
-        if (el := _safe_get(window, "-DA_EMAILS-")):  el.update(str(d["emails"]))
-        if (el := _safe_get(window, "-DA_WARMS-")):   el.update(str(d["new_warm"]))
-        if (el := _safe_get(window, "-DA_NEWCUS-")):  el.update(str(d["new_accounts"]))
-        if (el := _safe_get(window, "-DA_SALES-")):   el.update(_fmt_money(d["daily_sales"]))
-        if (el := _safe_get(window, "-MO_WARMS-")):   el.update(str(m["mo_warm"]))
-        if (el := _safe_get(window, "-MO_NEWCUS-")):  el.update(str(m["mo_newcus"]))
-        if (el := _safe_get(window, "-MO_SALES-")):   el.update(_fmt_money(m["mo_sales"]))
-    except Exception:
-        pass  # never crash UI on scoreboard refresh
-
-def _start_scoreboard_timer(window, interval_ms=5000):
-    """Use Tk after() to refresh scoreboards periodically."""
-    try:
-        def _tick():
-            try:
-                update_scoreboards(window)
-            finally:
+        # compute if next is due
+        if stage == 1:
+            # next: E2
+            delay = int(camp.get("e2_delay_days", 3) or 3)
+            if _sent and (datetime.now() - _sent).days >= delay:
+                # draft E2
+                lead = _campaign_get_lead_row_for_ref(r)
+                subj = apply_placeholders(camp.get("e2_subject",""), lead)
+                body = apply_placeholders(camp.get("e2_body",""), lead)
                 try:
-                    window.TKroot.after(interval_ms, _tick)
+                    if require_pywin32():
+                        outlook_draft_one(lead, subj, body, ref)
+                        r["Stage"] = "2"
+                        changed = True
                 except Exception:
                     pass
-        update_scoreboards(window)
-        window.TKroot.after(interval_ms, _tick)
-    except Exception:
+
+        elif stage == 2:
+            # next: E3
+            delay = int(camp.get("e3_delay_days", 7) or 7)
+            if _sent and (datetime.now() - _sent).days >= delay:
+                lead = _campaign_get_lead_row_for_ref(r)
+                subj = apply_placeholders(camp.get("e3_subject",""), lead)
+                body = apply_placeholders(camp.get("e3_body",""), lead)
+                try:
+                    if require_pywin32():
+                        outlook_draft_one(lead, subj, body, ref)
+                        r["Stage"] = "3"
+                        changed = True
+                except Exception:
+                    pass
+
+        elif stage >= 3:
+            # completed all emails; if no reply and divert, push to Dialer once then remove
+            if divert == 1:
+                lead = _campaign_get_lead_row_for_ref(r)
+                try:
+                    ensure_dialer_leads_file()
+                    cur = load_dialer_leads_matrix()
+                    # Build one row for dialer grid (header-aligned + ○ ○ ○ + notes)
+                    base = [lead.get(h,"") for h in HEADER_FIELDS]
+                    cur.append(base + ["○","○","○"] + ([""]*8))
+                    save_dialer_leads_matrix(cur)
+                except Exception:
+                    pass
+            rows.remove(r)
+            changed = True
+
+    if changed:
+        _write_campaign_rows(rows)
+
+# ===== CHUNK 4 / 5 — END =====
+# ===== CHUNK 5A / 6 — START =====
+# ============================================================
+# main_after_mount helpers
+# - Scoreboard helpers
+# - Dialer helper shims
+# - Warm helpers
+# - Campaigns UI helpers
+# - Live-sheet extractors
+# - Dialer/Warm/Customer state + save helpers
+# - Customer analytics
+# (No event loop here)
+# ============================================================
+
+def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
+    # ---------- Scoreboard helpers ----------
+    from datetime import datetime as _dt
+
+    def _safe_get(window, key):
         try:
+            return window[key]
+        except Exception:
+            return None
+
+    def _fmt_money(val):
+        try:
+            return f"${float(val):.2f}"
+        except Exception:
+            return "$0.00"
+
+    def _parse_any_date(s):
+        """Return date() from a wide range of formats or None."""
+        if not s:
+            return None
+        s = str(s).strip()
+        if not s:
+            return None
+        s2 = s.replace(",", " ")
+        fmts = [
+            "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m-%d-%Y",
+            "%m/%d", "%m-%d",
+            "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M",
+            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %I:%M %p", "%m-%d-%Y %I:%M %p"
+        ]
+        for fmt in fmts:
+            try:
+                dt = _dt.strptime(s2, fmt)
+                if fmt in ("%m/%d", "%m-%d"):
+                    dt = dt.replace(year=_dt.now().year)
+                return dt.date()
+            except Exception:
+                continue
+        try:
+            from dateutil import parser as _p  # optional
+            return _p.parse(s2).date()
+        except Exception:
+            return None
+
+    def _file_rows(path):
+        """Yield DictReader rows from a CSV file if it exists."""
+        try:
+            if path.exists():
+                with path.open("r", encoding="utf-8", newline="") as f:
+                    rdr = csv.DictReader(f)
+                    for r in rdr:
+                        yield r
+        except Exception:
+            return
+
+    def _float_val(s):
+        try:
+            return float(str(s).replace("$", "").replace(",", "").strip() or "0")
+        except Exception:
+            return 0.0
+
+    def compute_daily_metrics():
+        """Compute Daily Activity numbers from CSVs."""
+        today = _dt.now().date()
+
+        # Calls (dialer_results.csv)
+        calls = 0
+        for r in _file_rows(DIALER_RESULTS_PATH):
+            d = _parse_any_date(r.get("Timestamp", ""))
+            if d == today:
+                calls += 1
+
+        # Emails sent today (results.csv -> DateSent)
+        emails = 0
+        for r in _file_rows(RESULTS_PATH):
+            d = _parse_any_date(r.get("DateSent", ""))
+            if d == today:
+                emails += 1
+
+        # New warm leads today
+        new_warm = 0
+        for r in _file_rows(WARM_LEADS_PATH):
+            d = _parse_any_date(r.get("First Contact", "") or r.get("Timestamp", ""))
+            if d == today:
+                new_warm += 1
+
+        # New accounts today
+        new_accounts = 0
+        for r in _file_rows(CUSTOMERS_PATH):
+            d = _parse_any_date(r.get("Customer Since", ""))
+            if d == today:
+                new_accounts += 1
+
+        # Daily sales (orders.csv -> Order Date)
+        daily_sales = 0.0
+        for r in _file_rows(ORDERS_PATH):
+            d = _parse_any_date(r.get("Order Date", ""))
+            if d == today:
+                daily_sales += _float_val(r.get("Amount", ""))
+
+        return {
+            "calls": calls,
+            "emails": emails,
+            "new_warm": new_warm,
+            "new_accounts": new_accounts,
+            "daily_sales": daily_sales,
+        }
+
+    def compute_monthly_metrics():
+        """Compute Monthly Results numbers for the current month."""
+        now = _dt.now()
+        y, m = now.year, now.month
+
+        # New Warm Leads this month
+        mo_warm = 0
+        for r in _file_rows(WARM_LEADS_PATH):
+            d = _parse_any_date(r.get("First Contact", "") or r.get("Timestamp", ""))
+            if d and d.year == y and d.month == m:
+                mo_warm += 1
+
+        # New Customers this month
+        mo_newcus = 0
+        for r in _file_rows(CUSTOMERS_PATH):
+            d = _parse_any_date(r.get("Customer Since", ""))
+            if d and d.year == y and d.month == m:
+                mo_newcus += 1
+
+        # Total Sales this month
+        mo_sales = 0.0
+        for r in _file_rows(ORDERS_PATH):
+            d = _parse_any_date(r.get("Order Date", ""))
+            if d and d.year == y and d.month == m:
+                mo_sales += _float_val(r.get("Amount", ""))
+
+        return {
+            "mo_warm": mo_warm,
+            "mo_newcus": mo_newcus,
+            "mo_sales": mo_sales,
+        }
+
+    def update_scoreboards(window):
+        """Refresh both Daily Activity and Monthly Results labels."""
+        try:
+            d = compute_daily_metrics()
+            m = compute_monthly_metrics()
+            if (el := _safe_get(window, "-DA_CALLS-")): el.update(str(d["calls"]))
+            if (el := _safe_get(window, "-DA_EMAILS-")): el.update(str(d["emails"]))
+            if (el := _safe_get(window, "-DA_WARMS-")): el.update(str(d["new_warm"]))
+            if (el := _safe_get(window, "-DA_NEWCUS-")): el.update(str(d["new_accounts"]))
+            if (el := _safe_get(window, "-DA_SALES-")): el.update(_fmt_money(d["daily_sales"]))
+            if (el := _safe_get(window, "-MO_WARMS-")): el.update(str(m["mo_warm"]))
+            if (el := _safe_get(window, "-MO_NEWCUS-")): el.update(str(m["mo_newcus"]))
+            if (el := _safe_get(window, "-MO_SALES-")): el.update(_fmt_money(m["mo_sales"]))
+        except Exception:
+            pass  # never crash UI on scoreboard refresh
+
+    def _start_scoreboard_timer(window, interval_ms=4925):
+        """Use Tk after() to refresh scoreboards periodically."""
+        try:
+            def _tick():
+                try:
+                    update_scoreboards(window)
+                finally:
+                    try:
+                        window.TKroot.after(interval_ms, _tick)
+                    except Exception:
+                        pass
             update_scoreboards(window)
+            window.TKroot.after(interval_ms, _tick)
+        except Exception:
+            try:
+                update_scoreboards(window)
+            except Exception:
+                pass
+
+    # -------- Dialer helper shims --------
+    def dialer_cols_info(_headers=None):
+        first_dot = len(HEADER_FIELDS)         # 🙂/😐/☹️ columns start
+        last_dot = first_dot + 2
+        first_note = len(HEADER_FIELDS) + 3    # Note1
+        last_note = first_note + 7             # Note8
+        return {"first_dot": first_dot, "last_dot": last_dot,
+                "first_note": first_note, "last_note": last_note}
+
+    _DOT_BG = {"green": "#2E7D32", "gray": "#9E9E9E", "red": "#C62828"}
+    _DOT_FG = {"green": "#FFFFFF", "gray": "#000000", "red": "#FFFFFF"}
+
+    def dialer_clear_dot_highlights(sheet_obj, row, cols):
+        try:
+            for c in range(cols["first_dot"], cols["last_dot"] + 1):
+                sheet_obj.highlight_cells(row=row, column=c, bg=None, fg=None)
         except Exception:
             pass
 
+    def dialer_colorize_outcome(sheet_obj, row, outcome, cols=None):
+        if cols is None:
+            cols = dialer_cols_info(None)
+        base = cols["first_dot"]
+        try:
+            for i in range(3):
+                sheet_obj.set_cell_data(row, base + i, "○")
+            idx = {"green": 0, "gray": 1, "red": 2}[outcome]
+            c = base + idx
+            sheet_obj.set_cell_data(row, c, "●")
+            try:
+                sheet_obj.highlight_cells(row=row, column=c, bg=_DOT_BG[outcome], fg=_DOT_FG[outcome])
+            except Exception:
+                pass
+            sheet_obj.refresh()
+        except Exception:
+            pass
 
-# ---------- Main live-grid logic ----------
-def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
-    # ---------- extractors tied to the live sheets ----------
+    def dialer_next_empty_note_col(sheet_obj, row, cols=None):
+        if cols is None:
+            cols = dialer_cols_info(None)
+        try:
+            r = sheet_obj.get_row_data(row) or []
+        except Exception:
+            return None
+        for c in range(cols["first_note"], cols["last_note"] + 1):
+            if c >= len(r) or not (r[c] or "").strip():
+                return c
+        return None
+
+    def dialer_move_to_next_row(sheet_obj, current_row):
+        try:
+            total = sheet_obj.get_total_rows()
+        except Exception:
+            total = 0
+        nxt = current_row + 1 if total == 0 else min(current_row + 1, max(0, total - 1))
+        try:
+            sheet_obj.set_currently_selected(nxt, 0)
+            sheet_obj.see(nxt, 0)
+        except Exception:
+            pass
+        return nxt
+
+    # -------- Warm helpers --------
+    def warm_get_col_index_map():
+        """Return quick indices for WARM_V2_FIELDS."""
+        idx = {name: i for i, name in enumerate(WARM_V2_FIELDS)}
+        return {
+            "cost": idx.get("Cost ($)"),
+            "timestamp": idx.get("Timestamp"),
+            "first_call": idx.get("Call 1"),
+            "last_call": idx.get("Call 15"),
+        }
+
+    def warm_next_empty_call_col(row_values, col_map):
+        """Find next empty Call N cell (1..15)."""
+        if not row_values:
+            return None
+        c1, cN = col_map.get("first_call"), col_map.get("last_call")
+        if c1 is None or cN is None:
+            return None
+        for c in range(c1, cN + 1):
+            cell = row_values[c] if c < len(row_values) else ""
+            if not (cell or "").strip():
+                return c
+        return None
+
+    def warm_format_cost(val):
+        """Normalize to dollars string '123.45'. Keep empty if blank; pass through if non-numeric."""
+        s = (val or "").strip().replace(",", "")
+        if not s:
+            return ""
+        try:
+            return f"{float(s):.2f}"
+        except Exception:
+            return s
+
+       # ---------- Campaigns UI helpers ----------
+    def _camp_toggle_empty_vs_editor(window, show_editor: bool):
+        try:
+            window["-CAMP_EMPTY_WRAP-"].update(visible=not show_editor)
+            window["-CAMP_EDITOR_WRAP-"].update(visible=show_editor)
+        except Exception:
+            pass
+
+    def _camp_blank_steps():
+        return [
+            {"subject": "", "body": "", "delay_days": 0},
+            {"subject": "", "body": "", "delay_days": 0},
+            {"subject": "", "body": "", "delay_days": 0},
+        ]
+
+    def _camp_default_settings():
+        # default ON (send to dialer after finishing)
+        return {"send_to_dialer_after": "1"}
+
+    def camp_read_editor(window):
+        steps = []
+        for i in (1, 2, 3):
+            subj = window[f"-CAMP_SUBJ_{i}-"].get() if f"-CAMP_SUBJ_{i}-" in window.AllKeysDict else ""
+            body = window[f"-CAMP_BODY_{i}-"].get() if f"-CAMP_BODY_{i}-" in window.AllKeysDict else ""
+            delay = window[f"-CAMP_DELAY_{i}-"].get() if f"-CAMP_DELAY_{i}-" in window.AllKeysDict else "0"
+            try:
+                delay_i = int(str(delay).strip() or "0")
+            except Exception:
+                delay_i = 0
+            steps.append({"subject": subj or "", "body": body or "", "delay_days": max(0, delay_i)})
+        steps = normalize_campaign_steps(steps)
+
+        send_to_dialer = False
+        if "-CAMP_SEND_TO_DIALER-" in window.AllKeysDict:
+            send_to_dialer = bool(window["-CAMP_SEND_TO_DIALER-"].get())
+        settings = normalize_campaign_settings({"send_to_dialer_after": "1" if send_to_dialer else "0"})
+        return steps, settings
+
+    def camp_write_editor(window, steps, settings):
+        steps = normalize_campaign_steps(steps or [])
+        for idx, st in enumerate(steps, start=1):
+            if f"-CAMP_SUBJ_{idx}-" in window.AllKeysDict:
+                window[f"-CAMP_SUBJ_{idx}-"].update(st.get("subject", ""))
+            if f"-CAMP_BODY_{idx}-" in window.AllKeysDict:
+                window[f"-CAMP_BODY_{idx}-"].update(st.get("body", ""))
+            if f"-CAMP_DELAY_{idx}-" in window.AllKeysDict:
+                window[f"-CAMP_DELAY_{idx}-"].update(str(st.get("delay_days", 0)))
+        settings = normalize_campaign_settings(settings or {})
+        if "-CAMP_SEND_TO_DIALER-" in window.AllKeysDict:
+            window["-CAMP_SEND_TO_DIALER-"].update(bool(settings.get("send_to_dialer_after") in ("1", True)))
+
+    def _camp_refresh_combo_and_table(window):
+        try:
+            keys = list_campaign_keys()
+        except Exception:
+            keys = ["default"]
+
+        # Update combo
+        if "-CAMP_KEY-" in window.AllKeysDict:
+            current = window["-CAMP_KEY-"].get() or (keys[0] if keys else "default")
+            window["-CAMP_KEY-"].update(values=keys, value=current)
+
+        # Update table
+        try:
+            rows = [summarize_campaign_for_table(k) for k in keys]
+        except Exception:
+            rows = []
+        if "-CAMP_TABLE-" in window.AllKeysDict:
+            window["-CAMP_TABLE-"].update(values=rows)
+
+        # Toggle empty/editor section depending on content across all keys
+        populated = False
+        try:
+            for k in keys:
+                stps, _ = load_campaign_by_key(k)
+                stps = normalize_campaign_steps(stps)
+                if any((s.get("subject") or s.get("body")) for s in stps):
+                    populated = True
+                    break
+        except Exception:
+            populated = False
+        _camp_toggle_empty_vs_editor(window, show_editor=populated)
+
+    def _camp_prompt_new_key():
+        import re
+        key = sg.popup_get_text(
+            "Name your new campaign (e.g., 'butcher shop', 'farm market'):",
+            title="Add New Campaign",
+        )
+        if not key:
+            return None
+        key = key.strip()
+        if not key:
+            return None
+        key = re.sub(r"\s+", " ", key)
+        return key
+
+    def _camp_load_into_editor_by_key(window, key):
+        try:
+            steps, settings = load_campaign_by_key(key)
+        except Exception:
+            steps, settings = _camp_blank_steps(), _camp_default_settings()
+        camp_write_editor(window, steps, settings)
+        try:
+            window["-CAMP_KEY-"].update(value=key)
+        except Exception:
+            pass
+        _camp_toggle_empty_vs_editor(window, True)
+
+
+    # ---------- Live-sheet extractors ----------
     def matrix_from_sheet():
         # Guard: sheet may be None if mounting failed
         if sheet is None or not hasattr(sheet, "get_sheet_data"):
@@ -2609,7 +3057,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         return trimmed
 
     def warm_matrix_from_sheet_v2():
-        # Guard: warm_sheet may be None if mounting failed
         if warm_sheet is None or not hasattr(warm_sheet, "get_sheet_data"):
             return []
         raw = warm_sheet.get_sheet_data() or []
@@ -2622,7 +3069,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         return trimmed
 
     def customers_matrix_from_sheet():
-        # Guard: customer_sheet may be None if mounting failed
         if customer_sheet is None or not hasattr(customer_sheet, "get_sheet_data"):
             return []
         raw = customer_sheet.get_sheet_data() or []
@@ -2678,8 +3124,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         r = state["row"]
         if r is None:
             return False
-        have_outcome = state["outcome"] in ("green","gray","red")
-        have_text    = bool(_current_note_text())
+        have_outcome = state["outcome"] in ("green", "gray", "red")
+        have_text = bool(_current_note_text())
         sticky = state["note_col_by_row"].get(r)
         have_slot = (sticky is not None) or (dialer_next_empty_note_col(dial_sheet, r, cols) is not None)
         return have_outcome and have_text and have_slot
@@ -2705,8 +3151,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         f = cols["first_dot"]
         try:
             for i in range(3):
-                dial_sheet.set_cell_data(r, f+i, "○")
-            dial_sheet.set_cell_data(r, f + {"green":0,"gray":1,"red":2}[which], "●")
+                dial_sheet.set_cell_data(r, f + i, "○")
+            dial_sheet.set_cell_data(r, f + {"green": 0, "gray": 1, "red": 2}[which], "●")
             dialer_colorize_outcome(dial_sheet, r, which, cols)
             dial_sheet.refresh()
         finally:
@@ -2751,7 +3197,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         matrix = []
         for row in data:
             r = (list(row) + [""] * expected_len)[:expected_len]
-            for i in range(len(HEADER_FIELDS), len(HEADER_FIELDS)+3):
+            for i in range(len(HEADER_FIELDS), len(HEADER_FIELDS) + 3):
                 r[i] = r[i] if (r[i] or "").strip() else "○"
             matrix.append(r)
         save_dialer_leads_matrix(matrix)
@@ -2784,7 +3230,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
     def _warm_confirm_enabled():
         r = warm_state["row"]
         if r is None: return False
-        if warm_state["outcome"] not in ("green","gray","red"): return False
+        if warm_state["outcome"] not in ("green", "gray", "red"): return False
         if not _warm_note_text(): return False
         try:
             row_vals = warm_sheet.get_row_data(r) or []
@@ -2969,9 +3415,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     total_sales += v
             except Exception:
                 pass
-            # Reorder explicit
+            # Reorder explicit or inferred (>=2 orders)
             is_yes_now = ((rec.get("Reorder?","") or "").strip().lower() == "yes")
-            # Auto YES if >=2 orders
             oc = orders_counts.get(comp, (0, 0.0))[0] if comp else 0
             if oc >= 2 and not is_yes_now:
                 if idx_reorder is not None:
@@ -3012,6 +3457,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         _safe_update("-AN_CACLTV-", f"1 : {ratio:.2f}" if cac > 0 else "1 : 0")
         _safe_update("-AN_REORDER-", f"{reorder_rate:.1f}%")
 
+# ===== CHUNK 5A / 6 — END =====
+# ===== CHUNK 5b / 6 — START =====
     # ============================================================
     # Prime UI (Email Results stats + analytics + scoreboards)
     # ============================================================
@@ -3021,23 +3468,23 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         new_count = 0
         for row in matrix:
             d = dict_from_row(row)
-            if not valid_email(d.get("Email","")):
+            if not valid_email(d.get("Email", "")):
                 continue
             fp = row_fingerprint_from_dict(d)
             if fp not in seen:
                 new_count += 1
         if new_count > 0:
-            window["-FIRE-"].update(disabled=False, button_color=("white","#C00000"))
+            window["-FIRE-"].update(disabled=False, button_color=("white", "#C00000"))
             window["-FIRE_HINT-"].update(f" Ready: {new_count} new lead(s).")
         else:
-            window["-FIRE-"].update(disabled=True, button_color=("white","#700000"))
+            window["-FIRE-"].update(disabled=True, button_color=("white", "#700000"))
             window["-FIRE_HINT-"].update(" (no NEW leads; already drafted or no valid emails)")
 
     def refresh_results_metrics():
         rows = load_results_rows_sorted()
         total_sent = sum(1 for r in rows if r.get("DateSent"))
         total_replied = sum(1 for r in rows if r.get("DateReplied"))
-        warm = sum(1 for r in rows if (r.get("Status","").lower()=="green"))
+        warm = sum(1 for r in rows if (r.get("Status", "").lower() == "green"))
         window["-WARM-"].update(str(warm))
         window["-REPLRATE-"].update(f"{total_replied} / {total_sent}")
 
@@ -3095,8 +3542,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 try:
                     sheet.insert_rows(sheet.get_total_rows(), number_of_rows=10); sheet.refresh()
                 except Exception:
-                    try: sheet.insert_rows(sheet.get_total_rows(), amount=10); sheet.refresh()
-                    except Exception as e: popup_error(f"Could not add rows: {e}")
+                    try:
+                        sheet.insert_rows(sheet.get_total_rows(), amount=10); sheet.refresh()
+                    except Exception as e:
+                        popup_error(f"Could not add rows: {e}")
             refresh_fire_state()
 
         elif event == "-DELROWS-":
@@ -3126,48 +3575,105 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception as e:
                 window["-STATUS-"].update(f"Save error: {e}")
 
-        # ---------------- Templates tab ----------------
-        elif event == "-ADDNEW-":
-            info = add_new_template_dialog()
-            if info:
+        # ---------------- Email Campaigns tab (NEW handlers) ----------------
+        elif event in ("-CAMP_ADD_NEW-", "-CAMP_NEW-"):
+            new_key = _camp_prompt_new_key()
+            if new_key:
+                # Update combo to include the new key (not yet saved)
                 try:
-                    tpls, subs, mp = load_templates_ini()
-                    name = info["name"]
-                    tpls[name] = info["body"]
-                    subs[name] = info["subject"]
-                    for k in info["keys"]:
-                        mp[k] = name
-                    save_templates_ini(tpls, subs, mp)
-                    window["-TPL_STATUS-"].update(f"Template '{name}' saved. Click Reload Templates to show it.")
-                except Exception as e:
-                    window["-TPL_STATUS-"].update(f"Save error: {e}")
+                    keys = list_campaign_keys()
+                except Exception:
+                    keys = []
+                if new_key not in keys:
+                    keys.append(new_key)
+                if "-CAMP_KEY-" in window.AllKeysDict:
+                    window["-CAMP_KEY-"].update(values=keys, value=new_key)
+                camp_write_editor(window, _camp_blank_steps(), _camp_default_settings())
+                _camp_toggle_empty_vs_editor(window, True)
+                try:
+                    window["-CAMP_STATUS-"].update("New campaign ready. Fill in fields and click Save.")
+                except Exception:
+                    pass
 
-        elif event == "-RELOADTPL-":
-            window.close(); main(); return
+        elif event == "-CAMP_LOAD-" or event == "-CAMP_KEY-":
+            key = (values.get("-CAMP_KEY-") or "").strip()
+            if not key:
+                continue
+            _camp_load_into_editor_by_key(window, key)
+            try: window["-CAMP_STATUS-"].update(f"Loaded '{key}'.")
+            except Exception: pass
 
-        elif event == "-SAVETPL-":
+        elif event == "-CAMP_SAVE-":
+            key = (values.get("-CAMP_KEY-") or "").strip()
+            if not key:
+                popup_error("Provide a campaign name first (use New).")
+                continue
+            steps, settings = camp_read_editor(window)
             try:
-                tpls_out, subs_out = {}, {}
-                current_keys = set()
-                for k in values:
-                    if k.startswith("-TPL_"):
-                        current_keys.add(k[5:-1] if k.endswith("-") else k[5:])
-                for tkey in current_keys:
-                    tpls_out[tkey] = values.get(f"-TPL_{tkey}-","")
-                    subs_out[tkey] = values.get(f"-SUBJ_{tkey}-","") or DEFAULT_SUBJECT
-                new_map = {}
-                for line in (values.get("-MAP-","") or "").splitlines():
-                    if "->" in line:
-                        left,right = line.split("->",1); left,right = left.strip(), right.strip()
-                        if left and right: new_map[left] = right
-                save_templates_ini(tpls_out, subs_out, new_map)
-                window["-TPL_STATUS-"].update("Templates & mapping saved ✓")
+                save_campaign_by_key(key, steps, settings)
+                window["-CAMP_STATUS-"].update("Saved ✓")
             except Exception as e:
-                window["-TPL_STATUS-"].update(f"Save error: {e}")
+                window["-CAMP_STATUS-"].update(f"Save error: {e}")
+            _camp_refresh_combo_and_table(window)
+            _camp_toggle_empty_vs_editor(window, True)
 
-        elif event == "-RESETTPL-":
-            save_templates_ini(DEFAULT_TEMPLATES, DEFAULT_SUBJECTS, DEFAULT_MAP)
-            window.close(); main(); return
+        elif event == "-CAMP_DELETE-":
+            key = (values.get("-CAMP_KEY-") or "").strip()
+            if not key:
+                continue
+            yn = sg.popup_yes_no(f"Delete campaign '{key}'? This cannot be undone.")
+            if yn == "Yes":
+                try:
+                    delete_campaign_by_key(key)
+                    window["-CAMP_STATUS-"].update("Deleted ✓")
+                except Exception as e:
+                    window["-CAMP_STATUS-"].update(f"Delete error: {e}")
+                _camp_refresh_combo_and_table(window)
+                # If none left, hide editor
+                try:
+                    keys_left = list_campaign_keys()
+                except Exception:
+                    keys_left = []
+                if not keys_left:
+                    _camp_toggle_empty_vs_editor(window, False)
+                else:
+                    # Load first remaining
+                    _camp_load_into_editor_by_key(window, keys_left[0])
+
+        elif event == "-CAMP_RELOAD-":
+            key = (values.get("-CAMP_KEY-") or "").strip()
+            if key:
+                _camp_load_into_editor_by_key(window, key)
+                try: window["-CAMP_STATUS-"].update("Reloaded ✓")
+                except Exception: pass
+
+        elif event == "-CAMP_RESET-":
+            camp_write_editor(window, _camp_blank_steps(), _camp_default_settings())
+            try: window["-CAMP_STATUS-"].update("Reset fields. (Not saved yet)")
+            except Exception: pass
+
+        elif event == "-CAMP_REFRESH_LIST-":
+            _camp_refresh_combo_and_table(window)
+            try: window["-CAMP_STATUS-"].update("Refreshed ✓")
+            except Exception: pass
+
+        elif event == "-CAMP_TABLE-":
+            # Load the selected campaign into the editor
+            try:
+                sel = values.get("-CAMP_TABLE-", [])
+                if sel:
+                    idx = sel[0]
+                    keys = list_campaign_keys()
+                    rows = [summarize_campaign_for_table(k) for k in keys]
+                    if 0 <= idx < len(rows):
+                        key = rows[idx][0]
+                        if "-CAMP_KEY-" in window.AllKeysDict:
+                            window["-CAMP_KEY-"].update(value=key)
+                        _camp_load_into_editor_by_key(window, key)
+                        try: window["-CAMP_STATUS-"].update(f"Loaded '{key}' from list.")
+                        except Exception: pass
+            except Exception:
+                pass
 
         # ---------------- Email Results tab ----------------
         elif event == "-SYNC-":
@@ -3175,15 +3681,15 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-RS_STATUS-"].update("pywin32 missing (Outlook COM). Install pywin32.")
                 continue
             try:
-                days = int((values.get("-LOOKBACK-","") or "60").strip())
+                days = int((values.get("-LOOKBACK-", "") or "60").strip())
             except Exception:
                 days = 60
             window["-RS_STATUS-"].update("Syncing…")
             try:
                 s_count, r_count = outlook_sync_results(days)
                 rows = load_results_rows_sorted()
-                data = [[r.get("Ref",""), r.get("Email",""), r.get("Company",""), r.get("Industry",""),
-                         r.get("DateSent",""), r.get("DateReplied",""), r.get("Status",""), r.get("Subject","")] for r in rows]
+                data = [[r.get("Ref", ""), r.get("Email", ""), r.get("Company", ""), r.get("Industry", ""),
+                         r.get("DateSent", ""), r.get("DateReplied", ""), r.get("Status", ""), r.get("Subject", "")] for r in rows]
                 window["-RSTABLE-"].update(values=data)
                 refresh_results_metrics()
                 window["-RS_STATUS-"].update(f"Synced: {s_count} sent refs; {r_count} replies.")
@@ -3205,14 +3711,14 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     try: add_warm_from_result(rows[idx], note="Marked Green on Email Results")
                     except Exception as e: print("Warm add error:", e)
                 rows = load_results_rows_sorted()
-                data = [[r.get("Ref",""), r.get("Email",""), r.get("Company",""), r.get("Industry",""),
-                         r.get("DateSent",""), r.get("DateReplied",""), r.get("Status",""), r.get("Subject","")] for r in rows]
+                data = [[r.get("Ref", ""), r.get("Email", ""), r.get("Company", ""), r.get("Industry", ""),
+                         r.get("DateSent", ""), r.get("DateReplied", ""), r.get("Status", ""), r.get("Subject", "")] for r in rows]
                 window["-RSTABLE-"].update(values=data)
                 refresh_results_metrics()
-                try: 
+                try:
                     refresh_customer_analytics()
                     update_scoreboards(window)
-                except Exception: 
+                except Exception:
                     pass
 
         elif event == "-MARK_GRAY-":
@@ -3223,8 +3729,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 if 0 <= idx < len(rows):
                     set_status(rows[idx]["Ref"], "gray")
                 rows = load_results_rows_sorted()
-                data = [[r.get("Ref",""), r.get("Email",""), r.get("Company",""), r.get("Industry",""),
-                         r.get("DateSent",""), r.get("DateReplied",""), r.get("Status",""), r.get("Subject","")] for r in rows]
+                data = [[r.get("Ref", ""), r.get("Email", ""), r.get("Company", ""), r.get("Industry", ""),
+                         r.get("DateSent", ""), r.get("DateReplied", ""), r.get("Status", ""), r.get("Subject", "")] for r in rows]
                 window["-RSTABLE-"].update(values=data)
                 refresh_results_metrics()
 
@@ -3238,8 +3744,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     try: add_no_interest_from_result(rows[idx], note="Marked Red on Email Results", no_contact_flag=0)
                     except Exception as e: print("No-interest add error:", e)
                 rows = load_results_rows_sorted()
-                data = [[r.get("Ref",""), r.get("Email",""), r.get("Company",""), r.get("Industry",""),
-                         r.get("DateSent",""), r.get("DateReplied",""), r.get("Status",""), r.get("Subject","")] for r in rows]
+                data = [[r.get("Ref", ""), r.get("Email", ""), r.get("Company", ""), r.get("Industry", ""),
+                         r.get("DateSent", ""), r.get("DateReplied", ""), r.get("Status", ""), r.get("Subject", "")] for r in rows]
                 window["-RSTABLE-"].update(values=data)
                 refresh_results_metrics()
 
@@ -3708,19 +4214,264 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             pass
 
     window.close()
+# ===== CHUNK 5b / 6 — END =====
+# ===== CHUNK 6 / 6 — START =====
+# ============================================================
+# Email Campaigns: enroll helpers and drafting logic
+# (integrates with hourly task from Chunk 5 via _draft_next_stage_stub)
+# Uses the multi-campaign (per niche/industry) storage wired in earlier:
+#   load_campaign_by_key(key)  -> (steps, settings)
+#   normalize_campaign_steps(steps) with keys: subject, body, delay_days
+# ============================================================
+
+import configparser
+
+# (Legacy placeholder kept for backward-compat; not used by new logic)
+CAMPAIGN_CFG_PATH = APP_DIR / "campaigns.ini"
+
+# ---------- Campaign enrollment & maintenance ----------
+def campaigns_enroll(ref_short: str, email: str, company: str,
+                     campaign_key: str = "default",
+                     divert_to_dialer: bool = True):
+    """
+    Add a row to campaigns.csv if not already present. Stage starts at 0.
+    Stage meanings:
+      0: queued before first DateSent is known
+      1: E1 sent (DateSent exists); next due -> E2
+      2: E2 sent; next due -> E3
+      3: E3 sent; campaign complete (hourly task will remove; may divert to Dialer)
+    """
+    ensure_campaigns_file()
+    ref_l = (ref_short or "").strip().lower()
+    rows = []
+    exists = False
+    if CAMPAIGNS_PATH.exists():
+        with CAMPAIGNS_PATH.open("r", encoding="utf-8", newline="") as f:
+            rdr = csv.DictReader(f)
+            for r in rdr:
+                if (r.get("Ref","") or "").strip().lower() == ref_l:
+                    exists = True
+                rows.append(r)
+    if not exists:
+        rows.append({
+            "Ref": ref_short or "",
+            "Email": email or "",
+            "Company": company or "",
+            "CampaignKey": campaign_key or "default",
+            "Stage": "0",
+            "DivertToDialer": "1" if divert_to_dialer else "0",
+        })
+        _campaigns_write_rows(rows)
+
+def campaigns_is_enrolled(ref_short: str) -> bool:
+    ensure_campaigns_file()
+    ref_l = (ref_short or "").strip().lower()
+    if not CAMPAIGNS_PATH.exists():
+        return False
+    with CAMPAIGNS_PATH.open("r", encoding="utf-8", newline="") as f:
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            if (r.get("Ref","") or "").strip().lower() == ref_l:
+                return True
+    return False
+
+# ---------- Outlook single draft helper ----------
+def _ensure_outlook_folder_drafts_sub(session, name: str):
+    """Returns a subfolder under Drafts named `name` (creates if missing)."""
+    store = pick_store(session)
+    drafts_root = store.GetDefaultFolder(16)  # olFolderDrafts
+    for i in range(1, drafts_root.Folders.Count + 1):
+        f = drafts_root.Folders.Item(i)
+        if (f.Name or "").lower() == (name or "").strip().lower():
+            return f
+    return drafts_root.Folders.Add(name or "Death Star")
+
+def _draft_one_outlook(ref_short: str, email: str, subj_text: str, body_text: str):
+    """Create a single Outlook draft under the Death Star subfolder."""
+    import win32com.client as win32
+    outlook = win32.Dispatch("Outlook.Application")
+    session = outlook.GetNamespace("MAPI")
+    target_folder = _ensure_outlook_folder_drafts_sub(session, DEATHSTAR_SUBFOLDER)
+    body_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;">
+      <div style="font-family:Segoe UI, Arial, sans-serif; font-size:14px; line-height:1.5; color:#111;">
+        {blocks_to_html(body_text)}
+        <!-- ref:{ref_short} -->
+      </div>
+    </body></html>"""
+    msg = target_folder.Items.Add("IPM.Note")
+    msg.To = email or ""
+    msg.Subject = f"{subj_text} [ref:{ref_short}]"
+    msg.BodyFormat = 2
+    msg.HTMLBody = body_html
+    msg.Save()
+    # update results.csv cache for visibility
+    try:
+        upsert_result(ref_short, email or "", "", "", subj_text)
+    except Exception:
+        pass
+    return True
+
+# ---------- Placeholders & row dict ----------
+def _rowdict_for_placeholders(results_row: dict):
+    # Ensure common placeholders exist (keys must match HEADER_FIELDS keys)
+    d = {h: "" for h in HEADER_FIELDS}
+    for k in ("Email","Company","Industry","First Name","First_Name","FirstName"):
+        if k in d:
+            d[k] = results_row.get(k, "")
+    # Always ensure Email/Company/Industry present
+    d["Email"] = results_row.get("Email","")
+    d["Company"] = results_row.get("Company","")
+    d["Industry"] = results_row.get("Industry","")
+    return d
+
+# ---------- Due-date logic anchored to DateSent ----------
+def _days_since(dt) -> int:
+    if not dt:
+        return 0
+    try:
+        return max(0, (datetime.now() - dt).days)
+    except Exception:
+        return 0
+
+def _get_step_delays_for_key(campaign_key: str):
+    """
+    Read delays from the per-key campaign definition.
+    Returns tuple: (delay_e2_days, delay_e3_days)
+    where:
+      delay_e2_days = delay_days of step 2
+      delay_e3_days = delay_days of step 3
+    """
+    try:
+        steps, _settings = load_campaign_by_key(campaign_key or "default")
+        steps = normalize_campaign_steps(steps)
+        d2 = int(str(steps[1].get("delay_days", 0)).strip() or "0")  # step 2 delay
+        d3 = int(str(steps[2].get("delay_days", 0)).strip() or "0")  # step 3 delay
+        return (max(0, d2), max(0, d3))
+    except Exception:
+        return (3, 7)  # safe fallback
+
+def _is_due_for_next(results_row: dict, next_stage: int, campaign_key: str) -> bool:
+    """
+    Decide if it's time to draft E2/E3 anchored to last DateSent.
+    - next_stage 2: days_since(DateSent) >= delay(step2)
+    - next_stage 3: days_since(DateSent) >= delay(step2) + delay(step3)
+    """
+    sent_dt = _results_sent_dt(results_row)
+    if not sent_dt:
+        return False
+    d2, d3 = _get_step_delays_for_key(campaign_key)
+    elapsed = _days_since(sent_dt)
+    if next_stage == 2:
+        return elapsed >= d2
+    if next_stage == 3:
+        return elapsed >= (d2 + d3)
+    return False
+
+def _get_subject_body_for_stage(campaign_key: str, stage_num: int):
+    """
+    Pull subject/body for the given stage (1..3) from the selected campaign.
+    Returns (subject, body). Falls back to simple templates if missing.
+    """
+    steps, _settings = load_campaign_by_key(campaign_key or "default")
+    steps = normalize_campaign_steps(steps)
+    idx = max(1, min(3, stage_num)) - 1
+    subj = (steps[idx].get("subject") or "").strip()
+    body = (steps[idx].get("body") or "").strip()
+    if not subj:
+        subj = ["Quick hello for {Company}",
+                "Following up for {Company}",
+                "Worth a quick chat about {Company}?"][idx]
+    if not body:
+        body_defaults = [
+            "Hi {First Name},\n\nWanted to share something relevant to {Company}.\n\nCheers,\nMe",
+            "Hi {First Name},\n\nCircling back in case my note missed you.\n\nBest,\nMe",
+            "Hi {First Name},\n\nLast follow-up from me—open to a quick call?\n\nThanks,\nMe",
+        ]
+        body = body_defaults[idx]
+    return subj, body
+
+# ---------- Public: replaces stub referenced by hourly task ----------
+def draft_next_stage_from_config(ref: str, email: str, company: str,
+                                 campaign_key: str, next_stage: int) -> bool:
+    """
+    Returns True iff we created a draft for `next_stage` (1..3).
+    Preconditions:
+      - pywin32 available
+      - Ref exists in results.csv
+      - Not replied
+      - For stages > 1, delay satisfied based on DateSent and campaign delays
+    """
+    try:
+        if not require_pywin32():
+            return False
+
+        res_map = _read_results_by_ref()
+        r = res_map.get((ref or "").lower())
+        if not r:
+            return False
+        if _results_replied(r):
+            return False
+
+        # Stage 1 drafts typically created at send time; only gate delays for 2/3
+        if next_stage in (2, 3):
+            if not _is_due_for_next(r, next_stage, campaign_key):
+                return False
+
+        subj_tpl, body_tpl = _get_subject_body_for_stage(campaign_key, next_stage)
+        rowd = _rowdict_for_placeholders(r)
+        subj_text = apply_placeholders(subj_tpl, rowd)
+        body_text = apply_placeholders(body_tpl, rowd)
+
+        _draft_one_outlook(ref, email, subj_text, body_text)
+        return True
+    except Exception:
+        return False
+
+# Hot-swap the stub used in CHUNK 5 so the hourly runner actually drafts
+try:
+    globals()["_draft_next_stage_stub"] = draft_next_stage_from_config
+except Exception:
+    pass
+
+# ---------- Convenience enrollment helpers ----------
+def campaigns_enroll_from_results_row(res_row: dict, campaign_key="default", divert_to_dialer=True):
+    ref = res_row.get("Ref","") or ""
+    email = res_row.get("Email","") or ""
+    company = res_row.get("Company","") or ""
+    if not ref:
+        return
+    campaigns_enroll(ref, email, company, campaign_key, divert_to_dialer)
+
+def campaigns_bulk_enroll_from_status(status="gray", campaign_key="default", divert_to_dialer=True, max_rows=2000):
+    rows = load_results_rows_sorted()
+    count = 0
+    for r in rows:
+        if count >= max_rows:
+            break
+        if _results_replied(r):
+            continue
+        if (r.get("Status","") or "").strip().lower() == (status or "").lower():
+            campaigns_enroll_from_results_row(r, campaign_key, divert_to_dialer)
+            count += 1
+    return count
 
 
 # ============================================================
-# Entry
+# Entry (must be last in the file, after all chunks)
 # ============================================================
 if __name__ == "__main__":
+    import traceback
     try:
         main()
     except Exception as e:
+        # Print full traceback to console so we see the exact file/line
+        traceback.print_exc()
         try:
             popup_error(f"Fatal error starting app: {e}")
         except Exception:
-            import traceback
-            traceback.print_exc()
+            pass
         input("\n\n[ERROR] Press Enter to exit...")
-# ===== CHUNK 5 / 5 — END =====
+
+# ===== CHUNK 6 / 6 — END =====
+
