@@ -1,4 +1,4 @@
-# ===== CHUNK 1 / 5 — START =====
+# ===== CHUNK 1 / 7 — START =====
 # deathstar.py — The Death Star (GUI)
 # v2025-10-01 — Email + Dialer + Warm Leads + Plain Paste RC + Resizable Columns
 # Requires: PySimpleGUI, tksheet; (optional) pywin32 for Outlook
@@ -812,8 +812,8 @@ def _enable_column_resizing(sheet_obj):
             sheet_obj.enable_bindings((fl,))
         except Exception:
             pass
-# ===== CHUNK 1 / 6 — END =====
-# ===== CHUNK 2 / 6 — START =====
+# ===== CHUNK 1 / 7 — END =====
+# ===== CHUNK 2 / 7 — START =====
 # ============================================================
 # GUI
 # ============================================================
@@ -971,11 +971,46 @@ def main():
 
     any_campaigns_populated = _any_populated_campaign()
 
-    # Active campaigns table data (may be empty)
+    # ---- NEW: compute response rate per campaign (by matching subjects) ----
+    def _campaign_response_rate_for_key(key):
+        try:
+            stps, _st = load_campaign_by_key(key)
+            stps = normalize_campaign_steps(stps)
+        except Exception:
+            return ""
+        subjects_set = {(s.get("subject", "") or "").strip() for s in stps if (s.get("subject", "") or "").strip()}
+        if not subjects_set:
+            return ""
+        try:
+            rows = load_results_rows_sorted()
+        except Exception:
+            return ""
+        sent = 0
+        replied = 0
+        for r in rows:
+            subj = (r.get("Subject", "") or "").strip()
+            if subj in subjects_set:
+                if r.get("DateSent"):
+                    sent += 1
+                if r.get("DateReplied"):
+                    replied += 1
+        if sent == 0:
+            return "0.0%"
+        return f"{(replied / sent) * 100:.1f}%"
+
+    # Active campaigns table data (may be empty) + add Resp %
     try:
-        _camp_table_rows = [summarize_campaign_for_table(k) for k in campaign_keys]
+        _camp_table_rows_base = [summarize_campaign_for_table(k) for k in campaign_keys]
     except Exception:
-        _camp_table_rows = []
+        _camp_table_rows_base = []
+    _camp_table_rows = []
+    for i, k in enumerate(campaign_keys):
+        try:
+            base = _camp_table_rows_base[i] if i < len(_camp_table_rows_base) else [k]
+        except Exception:
+            base = [k]
+        resp = _campaign_response_rate_for_key(k)
+        _camp_table_rows.append(base + [resp])
 
     # Empty state header (shown when no campaigns yet)
     empty_state = [
@@ -995,8 +1030,8 @@ def main():
          sg.Text("", key="-CAMP_STATUS-", text_color="#A0FFA0")]
     ]
 
-    # Compose the campaigns tab with two sections we can show/hide at runtime
-    campaigns_tab = [
+    # Compose the campaigns tab content we will make scrollable
+    campaigns_tab_content = [
         [sg.Text("Email Campaigns let you schedule up to 3 follow-ups. Drafts are created based on the *DateSent* in Email Results, not draft time.", text_color="#CCCCCC")],
         [sg.Text("If a prospect replies or is marked Green on Email Results, they’re removed from the campaign automatically.", text_color="#AAAAAA")],
 
@@ -1017,11 +1052,23 @@ def main():
         [sg.HorizontalSeparator(color="#4CAF50")],
         [sg.Text("Saved Campaigns", text_color="#9EE493")],
         [sg.Table(values=_camp_table_rows,
-                  headings=["Campaign", "Enabled Steps", "Delays (days)", "To Dialer", "Auto Sync", "Hourly Runner"],
-                  auto_size_columns=False, col_widths=[24, 14, 18, 10, 10, 14], justification="left", num_rows=8,
+                  headings=["Campaign", "Enabled Steps", "Delays (days)", "To Dialer", "Auto Sync", "Hourly Runner", "Resp %"],
+                  auto_size_columns=False, col_widths=[24, 14, 18, 10, 10, 14, 8], justification="left", num_rows=8,
                   key="-CAMP_TABLE-", enable_events=True, alternating_row_color="#2a2a2a",
                   text_color="#EEE", background_color="#111", header_text_color="#FFF", header_background_color="#333")],
         [sg.Button("Refresh List", key="-CAMP_REFRESH_LIST-")]
+    ]
+
+    # >>> SCROLLABLE wrapper for the entire Email Campaigns tab <<<
+    campaigns_tab = [
+        [sg.Column(
+            campaigns_tab_content,
+            size=(980, 620),
+            scrollable=True,
+            vertical_scroll_only=True,
+            expand_x=True,
+            expand_y=True,
+        )]
     ]
 
     # -------- Email Results tab --------
@@ -1053,7 +1100,8 @@ def main():
     ensure_dialer_files()
     ensure_no_interest_file()
 
-    DIALER_EXTRA_COLS = ["🙂", "😐", "☹️", "Note1", "Note2", "Note3", "Note4", "Note5", "Note6", "Note7", "Note8"]
+    # >>> NEW: use 🙁 (not ☹️) so emoji sizes are uniform
+    DIALER_EXTRA_COLS = ["🙂", "😐", "🙁", "Note1", "Note2", "Note3", "Note4", "Note5", "Note6", "Note7", "Note8"]
     DIALER_HEADERS = HEADER_FIELDS + DIALER_EXTRA_COLS
 
     try:
@@ -1191,7 +1239,7 @@ def main():
 
     # -------- Compose full layout --------
     SB_LEFT_PAD = (500, 0)
-    SB_TOP_PAD  = (0, 6)
+    SB_TOP_PAD  = (50, 6)   # << you can nudge this to move the scoreboards up/down
 
     scoreboards_row = [
         sg.Column(
@@ -1226,7 +1274,7 @@ def main():
         popup_error("tksheet not installed. Run: pip install tksheet")
         return
 
-    # Email Leads sheet in leads_host
+    # ========== Email Leads sheet in leads_host ==========
     host_frame_tk = leads_host.Widget
     for child in host_frame_tk.winfo_children():
         try:
@@ -1236,6 +1284,21 @@ def main():
     sheet_holder = sg.tk.Frame(host_frame_tk, bg="#111111")
     sheet_holder.pack(side="top", fill="both", expand=True)
 
+    # Helper to count emails-sent for an address (0..3+)
+    def _count_emails_sent_for_addr(addr: str) -> int:
+        a = (addr or "").strip().lower()
+        if not a:
+            return 0
+        try:
+            rows = load_results_rows_sorted()
+        except Exception:
+            return 0
+        n = 0
+        for r in rows:
+            if (r.get("Email", "") or "").strip().lower() == a and (r.get("DateSent") or "").strip():
+                n += 1
+        return min(n, 3)
+
     existing = []
     if CSV_PATH.exists():
         with CSV_PATH.open("r", encoding="utf-8", newline="") as f:
@@ -1243,15 +1306,33 @@ def main():
             for r in rdr:
                 existing.append([r.get(h, "") for h in HEADER_FIELDS])
 
+    # >>> NEW: display headers include an "Emails Sent" column at the end
+    LEADS_HEADERS_DISPLAY = HEADER_FIELDS + ["Emails Sent"]
+    email_idx = None
+    try:
+        email_idx = HEADER_FIELDS.index("Email")
+    except Exception:
+        email_idx = 0
+
     if existing:
-        data = existing + [[""] * len(HEADER_FIELDS) for _ in range(max(0, START_ROWS - len(existing)))]
+        base = existing + [[""] * len(HEADER_FIELDS) for _ in range(max(0, START_ROWS - len(existing)))]
     else:
-        data = [[""] * len(HEADER_FIELDS) for _ in range(START_ROWS)]
+        base = [[""] * len(HEADER_FIELDS) for _ in range(START_ROWS)]
+
+    # Build display data with "Emails Sent" values
+    data_display = []
+    for row in base:
+        try:
+            addr = row[email_idx] if email_idx is not None and email_idx < len(row) else ""
+        except Exception:
+            addr = ""
+        sent_n = _count_emails_sent_for_addr(addr)
+        data_display.append(list(row) + [str(sent_n)])
 
     sheet = Sheet(
         sheet_holder,
-        data=data,
-        headers=HEADER_FIELDS,
+        data=data_display,
+        headers=LEADS_HEADERS_DISPLAY,
         show_x_scrollbar=True,
         show_y_scrollbar=True
     )
@@ -1272,9 +1353,11 @@ def main():
     except Exception:
         pass
     sheet.pack(fill="both", expand=True)
-    for c in range(len(HEADER_FIELDS)):
+    for c in range(len(LEADS_HEADERS_DISPLAY)):
         try:
-            sheet.column_width(c, width=DEFAULT_COL_WIDTH)
+            # give Emails Sent a little extra width
+            width = 120 if LEADS_HEADERS_DISPLAY[c] == "Emails Sent" else DEFAULT_COL_WIDTH
+            sheet.column_width(c, width=width)
         except Exception:
             pass
 
@@ -1282,7 +1365,43 @@ def main():
     _ensure_rc_menu_plain_paste(sheet, window.TKroot)
     _enable_column_resizing(sheet)
 
-    # ---------- Dialer grid ----------
+    # Apply color rules for the "Emails Sent" column
+    def _apply_emails_sent_coloring(_sheet):
+        try:
+            total_rows = _sheet.get_total_rows()
+        except Exception:
+            total_rows = len(data_display)
+        emails_col = len(LEADS_HEADERS_DISPLAY) - 1
+        for r in range(max(0, total_rows)):
+            try:
+                v = _sheet.get_cell_data(r, emails_col)
+            except Exception:
+                v = ""
+            try:
+                n = int(str(v).strip() or "0")
+            except Exception:
+                n = 0
+            # colors: 0 white, 1 light gray, 2 gray, 3+ dark gray
+            bg = "#FFFFFF"
+            fg = "#000000"
+            if n == 1:
+                bg = "#EEEEEE"
+            elif n == 2:
+                bg = "#CFCFCF"
+            elif n >= 3:
+                bg = "#A6A6A6"
+            try:
+                _sheet.highlight_cells(row=r, column=emails_col, bg=bg, fg=fg)
+            except Exception:
+                pass
+        try:
+            _sheet.refresh()
+        except Exception:
+            pass
+
+    _apply_emails_sent_coloring(sheet)
+
+    # ========== Dialer grid ==========
     dial_host_tk = dialer_host.Widget
     for child in dial_host_tk.winfo_children():
         try:
@@ -1342,18 +1461,36 @@ def main():
         if c == idx_reviews: width = 60
         if c == idx_website: width = 160
         if first_dot <= c < first_note:
-            width = 36
+            width = 42  # <<< slightly wider so the centered dot looks perfect
         if first_note <= c <= last_note:
             width = 120
         try:
             dial_sheet.column_width(c, width=width)
         except Exception:
             pass
+
+    # Center-align the three outcome columns "○/●"
+    try:
+        outcome_cols = [first_dot, first_dot + 1, first_dot + 2]
+        try:
+            dial_sheet.align_columns(columns=outcome_cols, align="center")
+        except Exception:
+            try:
+                for col in outcome_cols:
+                    dial_sheet.column_align(col, align="center")
+            except Exception:
+                try:
+                    dial_sheet.set_column_alignments(outcome_cols, align="center")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     _bind_plaintext_paste_for_tksheet(dial_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(dial_sheet, window.TKroot)
     _enable_column_resizing(dial_sheet)
 
-    # ---------- Warm grid (tksheet) ----------
+    # ========== Warm grid (tksheet) ==========
     warm_host_tk = warm_host.Widget
     for child in warm_host_tk.winfo_children():
         try:
@@ -1432,7 +1569,7 @@ def main():
     _ensure_rc_menu_plain_paste(warm_sheet, window.TKroot)
     _enable_column_resizing(warm_sheet)
 
-    # ---------- Customers grid (tksheet) ----------
+    # ========== Customers grid (tksheet) ==========
     cust_host_tk = customers_host.Widget
     for child in cust_host_tk.winfo_children():
         try:
@@ -1520,8 +1657,8 @@ def main():
             pass
     print(">>> EXITING main()")
 
-# ===== CHUNK 2 / 6 — END =====
-# ===== CHUNK 3 / 6 — START =====
+# ===== CHUNK 2 / 7 — END =====
+# ===== CHUNK 3 / 7 — START =====
 # ============================================================
 # CSV I/O
 # ============================================================
@@ -1958,12 +2095,12 @@ def blocks_to_html(text):
 
 
 # ============================================================
-# Campaigns helpers (storage + queue)
+# Campaigns helpers (per-ref state via campaigns.csv)
+# (Legacy single-INI campaign schema removed)
 # ============================================================
 
 # Files
 CAMPAIGNS_PATH = APP_DIR / "campaigns.csv"     # per-ref state
-CAMPAIGNS_INI_PATH = APP_DIR / "campaigns.ini" # campaign definitions (per key)
 
 CAMPAIGNS_HEADERS = ["Ref","Email","Company","CampaignKey","Stage","DivertToDialer"]
 
@@ -1981,13 +2118,17 @@ def _read_campaign_rows():
             rows.append(r)
     return rows
 
-def _write_campaign_rows(rows):
+def _campaigns_write_rows(rows):
+    """Writer used by Chunk 7 helpers."""
     _backup(CAMPAIGNS_PATH)
     with CAMPAIGNS_PATH.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=CAMPAIGNS_HEADERS)
         w.writeheader()
         for r in rows:
             w.writerow({h: r.get(h,"") for h in CAMPAIGNS_HEADERS})
+
+# Back-compat alias (if any code still referenced the old name)
+_write_campaign_rows = _campaigns_write_rows
 
 def upsert_campaign_row(ref_short, email, company, campaign_key, stage=0, divert_to_dialer=0):
     rows = _read_campaign_rows()
@@ -2008,13 +2149,13 @@ def upsert_campaign_row(ref_short, email, company, campaign_key, stage=0, divert
             "CampaignKey": campaign_key or "default", "Stage": str(stage),
             "DivertToDialer": "1" if int(divert_to_dialer or 0) else "0"
         })
-    _write_campaign_rows(rows)
+    _campaigns_write_rows(rows)
 
 def remove_campaign_by_ref(ref_short):
     rows = _read_campaign_rows()
     ref_l = (ref_short or "").lower()
     rows = [r for r in rows if (r.get("Ref","") or "").lower() != ref_l]
-    _write_campaign_rows(rows)
+    _campaigns_write_rows(rows)
 
 def get_campaign_row(ref_short):
     ref_l = (ref_short or "").lower()
@@ -2030,72 +2171,8 @@ def set_campaign_stage(ref_short, new_stage):
         if (r.get("Ref","") or "").lower() == ref_l:
             r["Stage"] = str(new_stage)
             break
-    _write_campaign_rows(rows)
+    _campaigns_write_rows(rows)
 
-# Campaign definitions (per key)
-# campaigns.ini layout:
-# [default]
-# e1_subject=...
-# e1_body=...
-# e1_delay_days=0
-# e2_subject=...
-# e2_body=...
-# e2_delay_days=3
-# e3_subject=...
-# e3_body=...
-# e3_delay_days=7
-# divert_to_dialer=1
-def ensure_campaigns_ini(templates=None, subjects=None):
-    """Create campaigns.ini with defaults derived from existing template/defaults if missing."""
-    if CAMPAIGNS_INI_PATH.exists():
-        return
-    cfg = configparser.ConfigParser()
-    # Seed basic keys from template/subject defaults
-    tpls = templates or DEFAULT_TEMPLATES
-    subs = subjects or DEFAULT_SUBJECTS
-    def _seed(section_name):
-        cfg[section_name] = {
-            "e1_subject": subs.get(section_name, subs.get("default", DEFAULT_SUBJECT)),
-            "e1_body": tpls.get(section_name, tpls.get("default","")),
-            "e1_delay_days": "0",
-            "e2_subject": subs.get(section_name, subs.get("default", DEFAULT_SUBJECT)),
-            "e2_body": tpls.get(section_name, tpls.get("default","")),
-            "e2_delay_days": "3",
-            "e3_subject": subs.get(section_name, subs.get("default", DEFAULT_SUBJECT)),
-            "e3_body": tpls.get(section_name, tpls.get("default","")),
-            "e3_delay_days": "7",
-            "divert_to_dialer": "0",
-        }
-    _seed("default")
-    _seed("butcher_shop")
-    _seed("farm_orchard")
-    with CAMPAIGNS_INI_PATH.open("w", encoding="utf-8") as f:
-        cfg.write(f)
-
-def load_campaigns_ini():
-    """Return dict: {key: {e1_subject, e1_body, e1_delay_days, e2_..., e3_..., divert_to_dialer}}."""
-    ensure_campaigns_ini()
-    cfg = configparser.ConfigParser()
-    cfg.read(CAMPAIGNS_INI_PATH, encoding="utf-8")
-    out = {}
-    for sec in cfg.sections():
-        it = cfg[sec]
-        def _i(name, default="0"): 
-            try: return int(it.get(name, default))
-            except Exception: return int(default)
-        out[sec] = {
-            "e1_subject": it.get("e1_subject",""),
-            "e1_body":    it.get("e1_body",""),
-            "e1_delay_days": _i("e1_delay_days","0"),
-            "e2_subject": it.get("e2_subject",""),
-            "e2_body":    it.get("e2_body",""),
-            "e2_delay_days": _i("e2_delay_days","3"),
-            "e3_subject": it.get("e3_subject",""),
-            "e3_body":    it.get("e3_body",""),
-            "e3_delay_days": _i("e3_delay_days","7"),
-            "divert_to_dialer": _i("divert_to_dialer","0"),
-        }
-    return out
 
 # ============================================================
 # Outlook helpers (extended for single draft by ref)
@@ -2315,8 +2392,8 @@ def outlook_sync_results(lookback_days=60):
         pass
     return len(sent_map), len(reply_map)
 
-# ===== CHUNK 3 / 6 — END =====
-# ===== CHUNK 4 / 6 — START =====
+# ===== CHUNK 3 / 7 — END =====
+# ===== CHUNK 4 / 7 — START =====
 # ============================================================
 # Shared helpers (no hard dependency on live tksheet objects)
 # ============================================================
@@ -2647,8 +2724,8 @@ def process_campaign_queue():
     if changed:
         _write_campaign_rows(rows)
 
-# ===== CHUNK 4 / 5 — END =====
-# ===== CHUNK 5A / 6 — START =====
+# ===== CHUNK 4 / 7 — END =====
+# ===== CHUNK 5 / 7 — START =====
 # ============================================================
 # main_after_mount helpers
 # - Scoreboard helpers
@@ -3457,11 +3534,86 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         _safe_update("-AN_CACLTV-", f"1 : {ratio:.2f}" if cac > 0 else "1 : 0")
         _safe_update("-AN_REORDER-", f"{reorder_rate:.1f}%")
 
-# ===== CHUNK 5A / 6 — END =====
-# ===== CHUNK 5b / 6 — START =====
+# ===== CHUNK 5 / 7 — END =====
+# ===== CHUNK 6 / 7 — START =====
     # ============================================================
     # Prime UI (Email Results stats + analytics + scoreboards)
     # ============================================================
+
+    # Helper: recompute & recolor the "Emails Sent" display column on the Leads grid
+    def _emails_sent_for(addr: str) -> int:
+        a = (addr or "").strip().lower()
+        if not a:
+            return 0
+        try:
+            rows = load_results_rows_sorted()
+        except Exception:
+            return 0
+        n = 0
+        for r in rows:
+            if (r.get("Email", "") or "").strip().lower() == a and (r.get("DateSent") or "").strip():
+                n += 1
+        return min(n, 3)
+
+    def _refresh_emails_sent_column_impl():
+        """
+        Rebuild the last column ("Emails Sent") based on results.csv and apply the
+        same grayscale heat styling used at mount time.
+        """
+        try:
+            if sheet is None:
+                return
+            # Last column is the extra "Emails Sent" appended to HEADER_FIELDS
+            try:
+                total_rows = sheet.get_total_rows()
+            except Exception:
+                total_rows = 0
+
+            # Figure out where Email column lives in the data portion
+            try:
+                email_idx = HEADER_FIELDS.index("Email")
+            except Exception:
+                email_idx = 0
+
+            emails_col = len(HEADER_FIELDS)  # display col index for "Emails Sent"
+            for r in range(max(0, total_rows)):
+                try:
+                    row_vals = sheet.get_row_data(r) or []
+                except Exception:
+                    row_vals = []
+                addr = row_vals[email_idx] if email_idx < len(row_vals) else ""
+                n = _emails_sent_for(addr)
+
+                # Update cell text
+                try:
+                    sheet.set_cell_data(r, emails_col, str(n))
+                except Exception:
+                    pass
+
+                # Apply coloring: 0 white, 1 light gray, 2 gray, 3+ dark gray
+                bg = "#FFFFFF"; fg = "#000000"
+                if n == 1:   bg = "#EEEEEE"
+                elif n == 2: bg = "#CFCFCF"
+                elif n >= 3: bg = "#A6A6A6"
+                try:
+                    sheet.highlight_cells(row=r, column=emails_col, bg=bg, fg=fg)
+                except Exception:
+                    pass
+
+            try:
+                sheet.refresh()
+            except Exception:
+                pass
+        except Exception:
+            # Never crash UI during a cosmetic refresh
+            pass
+
+    # attach as a method so we can call window._refresh_emails_sent_column() safely
+    try:
+        setattr(window, "_refresh_emails_sent_column", _refresh_emails_sent_column_impl)
+    except Exception:
+        pass
+
     def refresh_fire_state():
         matrix = matrix_from_sheet()
         seen = load_state_set()
@@ -3490,6 +3642,12 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
     refresh_fire_state()
     refresh_results_metrics()
+    # NEW: update Emails Sent column/colors at startup
+    try:
+        window._refresh_emails_sent_column()
+    except Exception:
+        pass
+
     _update_confirm_button()
     _warm_update_confirm_button()
     try:
@@ -3547,6 +3705,11 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     except Exception as e:
                         popup_error(f"Could not add rows: {e}")
             refresh_fire_state()
+            # NEW: refresh Emails Sent display after structure change
+            try:
+                window._refresh_emails_sent_column()
+            except Exception:
+                pass
 
         elif event == "-DELROWS-":
             if sheet is None:
@@ -3567,6 +3730,11 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 except Exception as e:
                     popup_error(f"Could not delete rows: {e}")
             refresh_fire_state()
+            # NEW: refresh Emails Sent display after structure change
+            try:
+                window._refresh_emails_sent_column()
+            except Exception:
+                pass
 
         elif event == "-SAVECSV-":
             try:
@@ -3696,6 +3864,11 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 # After syncing, also refresh scoreboards (emails / warm leads may change)
                 try:
                     update_scoreboards(window)
+                except Exception:
+                    pass
+                # NEW: refresh Emails Sent column/colors after results changed
+                try:
+                    window._refresh_emails_sent_column()
                 except Exception:
                     pass
             except Exception as e:
@@ -4214,8 +4387,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             pass
 
     window.close()
-# ===== CHUNK 5b / 6 — END =====
-# ===== CHUNK 6 / 6 — START =====
+# ===== CHUNK 6 / 7 — END =====
+# ===== CHUNK 7 / 7 — START =====
 # ============================================================
 # Email Campaigns: enroll helpers and drafting logic
 # (integrates with hourly task from Chunk 5 via _draft_next_stage_stub)
@@ -4223,11 +4396,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 #   load_campaign_by_key(key)  -> (steps, settings)
 #   normalize_campaign_steps(steps) with keys: subject, body, delay_days
 # ============================================================
-
-import configparser
-
-# (Legacy placeholder kept for backward-compat; not used by new logic)
-CAMPAIGN_CFG_PATH = APP_DIR / "campaigns.ini"
 
 # ---------- Campaign enrollment & maintenance ----------
 def campaigns_enroll(ref_short: str, email: str, company: str,
@@ -4473,5 +4641,7 @@ if __name__ == "__main__":
             pass
         input("\n\n[ERROR] Press Enter to exit...")
 
-# ===== CHUNK 6 / 6 — END =====
+# ===== CHUNK 7 / 7 — END =====
+
+
 
