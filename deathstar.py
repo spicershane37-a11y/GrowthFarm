@@ -1,6 +1,6 @@
 # ===== CHUNK 1 / 7 — START =====
 # deathstar.py — The Death Star (GUI)
-# v2025-10-01 — Email + Dialer + Warm Leads + Plain Paste RC + Resizable Columns
+# v2025-10-02 — Email + Dialer + Warm Leads + Plain Paste RC + Resizable Columns + Keyboard Nav
 # Requires: PySimpleGUI, tksheet; (optional) pywin32 for Outlook
 
 import os, sys, csv, html, time, re, hashlib, configparser, io, base64
@@ -28,7 +28,7 @@ popup_error = _resolve_popup_error()
 if not hasattr(sg, "popup_error"):
     setattr(sg, "popup_error", popup_error)  # legacy compatibility
 
-APP_VERSION = "2025-10-01"
+APP_VERSION = "2025-10-02"
 
 # -------------------- App data locations --------------------
 APP_DIR      = Path(os.environ.get("APPDATA", str(Path.home()))) / "DeathStarApp"  # Roaming
@@ -68,16 +68,27 @@ WARM_FIELDS = [
     "Call 13 Date","Call 13 Notes","Call 14 Date","Call 14 Notes"
 ]
 
-# Customers sheet headers (UPDATED schema to match UI + logic)
+# Customers sheet headers (FINAL ORDER with address block + simplified fields)
 CUSTOMER_FIELDS = [
-    # Identity / contact (to mirror Warm columns for promotion)
-    "Company","Prospect Name","Phone #","Email","Location","Industry",
-    "Google Reviews","Rep","Samples?","Timestamp",
-    # Commercial lifecycle
-    "Opening Order $","Customer Since",
-    "First Order Date","Last Order Date","First Contact","Days To Close",
-    # Sales metrics
-    "CLTV","Sku's Ordered","Notes","Reorder?","Days","Sales/Day","Notes 2"
+    "Company",
+    "Prospect Name",
+    "Phone #",
+    "Email",
+    "Industry",
+    "Address",
+    "City",
+    "State",
+    "ZIP",
+    "CLTV",
+    "Sales/Day",
+    "Reorder?",
+    "First Order",
+    "Last Order",
+    "Days",
+    "First Contact",
+    "Days To Close",
+    "Sku's",
+    "Notes",
 ]
 
 # -------------------- UI tuning -----------------------------
@@ -567,28 +578,26 @@ def ensure_dialer_files():
             ])
 
 def ensure_warm_file():
+    """Ensure warm_leads.csv exists under the v2 schema (WARM_V2_FIELDS)."""
     WARM_LEADS_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not WARM_LEADS_PATH.exists():
         with WARM_LEADS_PATH.open("w", encoding="utf-8", newline="") as f:
-            csv.writer(f).writerow(WARM_FIELDS)
+            csv.writer(f).writerow(WARM_V2_FIELDS)
         return
 
-    needs_rewrite = False
+    # Migrate any existing file to v2 header
     rows = []
-
     with WARM_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
         rdr = csv.DictReader(f)
         existing_fields = rdr.fieldnames or []
-        if existing_fields != WARM_FIELDS:
-            needs_rewrite = True
         rows = list(rdr) if rdr.fieldnames else []
 
-    if needs_rewrite:
+    if existing_fields != WARM_V2_FIELDS:
         with WARM_LEADS_PATH.open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=WARM_FIELDS)
+            w = csv.DictWriter(f, fieldnames=WARM_V2_FIELDS)
             w.writeheader()
-            for row in rows:
-                w.writerow({h: row.get(h, "") for h in WARM_FIELDS})
+            for r in rows:
+                w.writerow({h: r.get(h, "") for h in WARM_V2_FIELDS})
 
 def ensure_no_interest_file():
     if not NO_INTEREST_PATH.exists():
@@ -651,6 +660,7 @@ def add_no_interest(row_dict, note, no_contact_flag: int, source: str):
         ])
 
 # Email Results → Warm / No-interest helpers
+
 def lead_lookup(email, company):
     rec = {}
     if CSV_PATH.exists():
@@ -812,6 +822,88 @@ def _enable_column_resizing(sheet_obj):
             sheet_obj.enable_bindings((fl,))
         except Exception:
             pass
+
+# ============================================================
+# Keyboard navigation helpers for tksheet
+# ============================================================
+
+def _enable_keyboard_nav(sheet_obj):
+    """Enable arrow-key navigation and Tab/Shift-Tab movement even when not editing."""
+    try:
+        total_rows = sheet_obj.get_total_rows()
+    except Exception:
+        total_rows = 0
+    try:
+        total_cols = sheet_obj.get_total_columns()
+    except Exception:
+        # Try headers length fallback
+        try:
+            total_cols = len(getattr(sheet_obj, "headers", []))
+        except Exception:
+            total_cols = 0
+
+    def _clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    def _current():
+        try:
+            r, c = sheet_obj.get_currently_selected()
+        except Exception:
+            r, c = 0, 0
+        r = _clamp(r, 0, max(0, total_rows - 1))
+        c = _clamp(c, 0, max(0, total_cols - 1))
+        return r, c
+
+    def _select(r, c):
+        r = _clamp(r, 0, max(0, total_rows - 1))
+        c = _clamp(c, 0, max(0, total_cols - 1))
+        # Try multiple APIs to set selection
+        for fn in (
+            getattr(sheet_obj, "select_cell", None),
+            getattr(sheet_obj, "set_currently_selected", None),
+        ):
+            if callable(fn):
+                try:
+                    fn(r, c)
+                    break
+                except Exception:
+                    pass
+        try:
+            sheet_obj.see(r, c)
+        except Exception:
+            pass
+        try:
+            sheet_obj.refresh()
+        except Exception:
+            pass
+
+    def _mv(dr, dc):
+        r, c = _current()
+        nr, nc = r + dr, c + dc
+        # Tab-like wrap across columns then rows
+        if nc >= total_cols:
+            nr += 1
+            nc = 0
+        elif nc < 0:
+            nr -= 1
+            nc = max(0, total_cols - 1)
+        _select(nr, nc)
+        return "break"
+
+    # Bindings on main table widget (MT) and sheet itself for redundancy
+    for w in filter(None, (getattr(sheet_obj, "MT", None), sheet_obj)):
+        try:
+            w.bind("<Left>",  lambda e: _mv(0, -1))
+            w.bind("<Right>", lambda e: _mv(0, 1))
+            w.bind("<Up>",    lambda e: _mv(-1, 0))
+            w.bind("<Down>",  lambda e: _mv(1, 0))
+            # Tab navigation regardless of edit state
+            w.bind("<Tab>",        lambda e: _mv(0, 1))
+            w.bind("<ISO_Left_Tab>", lambda e: _mv(0, -1))  # Shift+Tab on some platforms
+            w.bind("<Shift-Tab>",  lambda e: _mv(0, -1))
+        except Exception:
+            pass
+
 # ===== CHUNK 1 / 7 — END =====
 # ===== CHUNK 2 / 7 — START =====
 # ============================================================
@@ -1337,11 +1429,14 @@ def main():
         show_y_scrollbar=True
     )
     sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
-        "drag_select", "column_drag_and_drop", "row_drag_and_drop",
-        "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
-        "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "single_select",
+        # keyboard navigation
+        "arrowkeys", "tab_key", "shift_tab_key",
+        # selection & editing
+        "drag_select", "copy", "cut", "delete", "undo",
+        "edit_cell", "return_edit_cell", "select_all",
+        # menus & resizing
+        "right_click_popup_menu", "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         sheet.set_options(
@@ -1355,7 +1450,6 @@ def main():
     sheet.pack(fill="both", expand=True)
     for c in range(len(LEADS_HEADERS_DISPLAY)):
         try:
-            # give Emails Sent a little extra width
             width = 120 if LEADS_HEADERS_DISPLAY[c] == "Emails Sent" else DEFAULT_COL_WIDTH
             sheet.column_width(c, width=width)
         except Exception:
@@ -1381,9 +1475,7 @@ def main():
                 n = int(str(v).strip() or "0")
             except Exception:
                 n = 0
-            # colors: 0 white, 1 light gray, 2 gray, 3+ dark gray
-            bg = "#FFFFFF"
-            fg = "#000000"
+            bg = "#FFFFFF"; fg = "#000000"
             if n == 1:
                 bg = "#EEEEEE"
             elif n == 2:
@@ -1419,10 +1511,11 @@ def main():
         show_y_scrollbar=True
     )
     dial_sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
+        "single_select",
+        "arrowkeys", "tab_key", "shift_tab_key",
         "drag_select", "copy", "cut", "delete", "undo",
-        "edit_cell", "return_edit_cell", "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "edit_cell", "return_edit_cell", "select_all",
+        "right_click_popup_menu", "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         dial_sheet.set_options(
@@ -1461,7 +1554,7 @@ def main():
         if c == idx_reviews: width = 60
         if c == idx_website: width = 160
         if first_dot <= c < first_note:
-            width = 42  # <<< slightly wider so the centered dot looks perfect
+            width = 42
         if first_note <= c <= last_note:
             width = 120
         try:
@@ -1536,11 +1629,11 @@ def main():
         show_y_scrollbar=True
     )
     warm_sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
-        "drag_select", "column_drag_and_drop", "row_drag_and_drop",
-        "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
-        "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "single_select",
+        "arrowkeys", "tab_key", "shift_tab_key",
+        "drag_select", "copy", "cut", "delete", "undo",
+        "edit_cell", "return_edit_cell", "select_all",
+        "right_click_popup_menu", "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         warm_sheet.set_options(
@@ -1590,6 +1683,95 @@ def main():
     if len(customers_matrix) < 50:
         customers_matrix += [[""] * len(CUSTOMER_FIELDS) for _ in range(50 - len(customers_matrix))]
 
+      # --- Auto-calc Days and Sales/Day (Sales/Day ONLY from CLTV; Orders can refresh CLTV/dates)
+    try:
+        from datetime import datetime as _dt
+
+        def _parse_date_local(s):
+            s = (s or "").strip()
+            if not s:
+                return None
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%Y/%m/%d", "%m/%d", "%m-%d"):
+                try:
+                    d = _dt.strptime(s, fmt)
+                    if fmt in ("%m/%d", "%m-%d"):
+                        d = d.replace(year=_dt.now().year)
+                    return d.date()
+                except Exception:
+                    pass
+            return None
+
+        def _money_to_float_local(val):
+            s = (val or "").strip().replace(",", "").replace("$", "")
+            if not s:
+                return 0.0
+            try:
+                return float(s)
+            except Exception:
+                return 0.0
+
+        def _float_to_money_local(x):
+            try:
+                return f"{float(x):.2f}"
+            except Exception:
+                return ""
+
+        idx = {name: i for i, name in enumerate(CUSTOMER_FIELDS)}
+        i_company   = idx.get("Company")
+        i_first     = idx.get("First Order")
+        i_last      = idx.get("Last Order")
+        i_cltv      = idx.get("CLTV")
+        i_days      = idx.get("Days")
+        i_salesday  = idx.get("Sales/Day")
+
+        today = _dt.now().date()
+
+        for row in customers_matrix:
+            company = (row[i_company] if i_company is not None and i_company < len(row) else "").strip()
+            if not company:
+                continue
+
+            # 1) Refresh CLTV / First / Last from orders.csv (if present)
+            try:
+                stats = compute_customer_order_stats(company)
+            except Exception:
+                stats = None
+
+            if stats:
+                # If orders provided dates, prefer them
+                if stats.get("first_order_date") and i_first is not None:
+                    row[i_first] = stats["first_order_date"].strftime("%Y-%m-%d")
+                if stats.get("last_order_date") and i_last is not None:
+                    row[i_last] = stats["last_order_date"].strftime("%Y-%m-%d")
+                # Orders can update CLTV number; we still compute Sales/Day from CLTV below
+                if i_cltv is not None:
+                    row[i_cltv] = _float_to_money_local(stats.get("cltv", 0.0))
+
+            # 2) Compute Days from First Order (row value after refresh / or existing)
+            first_dt = _parse_date_local(row[i_first] if i_first is not None else "")
+            if first_dt and i_days is not None:
+                days = max(1, (today - first_dt).days)
+                row[i_days] = str(days)
+            else:
+                days = None
+                if i_days is not None:
+                    row[i_days] = ""
+
+            # 3) Compute Sales/Day strictly from CLTV ÷ Days (no direct orders usage)
+            if i_salesday is not None:
+                if days:
+                    cltv_val = _money_to_float_local(row[i_cltv] if i_cltv is not None else "")
+                    row[i_salesday] = _float_to_money_local(cltv_val / float(days)) if days else ""
+                else:
+                    row[i_salesday] = ""
+
+            # 4) Ensure CLTV cell is money-formatted (even if user typed a raw number)
+            if i_cltv is not None:
+                row[i_cltv] = _float_to_money_local(_money_to_float_local(row[i_cltv]))
+    except Exception:
+        pass
+
+
     try:
         from tksheet import Sheet as CustomerSheet
     except Exception:
@@ -1604,11 +1786,11 @@ def main():
         show_y_scrollbar=True
     )
     customer_sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
-        "drag_select", "column_drag_and_drop", "row_drag_and_drop",
-        "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
-        "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "single_select",
+        "arrowkeys", "tab_key", "shift_tab_key",
+        "drag_select", "copy", "cut", "delete", "undo",
+        "edit_cell", "return_edit_cell", "select_all",
+        "right_click_popup_menu", "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
         customer_sheet.set_options(
@@ -1631,6 +1813,12 @@ def main():
             customer_sheet.column_width(c, width=width)
         except Exception:
             pass
+
+    # Freeze the first column (Company)
+    try:
+        customer_sheet.freeze_columns(1)
+    except Exception:
+        pass
 
     _bind_plaintext_paste_for_tksheet(customer_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(customer_sheet, window.TKroot)
@@ -1663,6 +1851,7 @@ def main():
 # CSV I/O
 # ============================================================
 
+
 def load_csv_to_matrix():
     rows = []
     if not CSV_PATH.exists():
@@ -1688,9 +1877,11 @@ def save_matrix_to_csv(matrix):
 # ---- Safe write helpers for Warm Leads / Customers / Dialer leads ----
 BACKUP_DIR = APP_DIR / "_backups"
 
+
 def _ts():
     from datetime import datetime as _dt
     return _dt.now().strftime("%Y%m%d-%H%M%S")
+
 
 def _backup(path: Path):
     """Best-effort backup (binary copy) to APP_DIR/_backups with timestamp."""
@@ -1702,6 +1893,7 @@ def _backup(path: Path):
                 d.write(s.read())
     except Exception:
         pass
+
 
 def _atomic_write_csv(path: Path, headers: list, rows: list):
     """Write CSV to a temporary file, then replace target atomically."""
@@ -1719,6 +1911,7 @@ def _atomic_write_csv(path: Path, headers: list, rows: list):
 # Warm Leads v2 schema helpers
 # ============================================================
 
+
 def _build_warm_v2_fields():
     # Part 1 ensures file migration; we mirror the header list here
     base = [
@@ -1732,7 +1925,9 @@ def _build_warm_v2_fields():
     new_fields = base[:ts_idx] + ["Cost ($)", "Timestamp"] + [f"Call {i}" for i in range(1, 16)] + base[ts_idx+1:]
     return new_fields
 
+
 WARM_V2_FIELDS = _build_warm_v2_fields()
+
 
 def load_warm_leads_matrix_v2():
     """Load rows under WARM_V2_FIELDS (auto-filling missing cols with '')."""
@@ -1745,6 +1940,7 @@ def load_warm_leads_matrix_v2():
             rows.append([r.get(h, "") for h in WARM_V2_FIELDS])
     return rows
 
+
 def save_warm_leads_matrix_v2(matrix):
     """Save rows using the WARM_V2_FIELDS header."""
     _backup(WARM_LEADS_PATH)
@@ -1755,16 +1951,18 @@ def save_warm_leads_matrix_v2(matrix):
 # Dialer leads own CSV helpers
 # ============================================================
 
+
 DIALER_LEADS_PATH = APP_DIR / "dialer_leads.csv"
+
 
 def ensure_dialer_leads_file():
     """Ensure the dialer grid CSV exists with the expected headers."""
     if not DIALER_LEADS_PATH.exists():
         with DIALER_LEADS_PATH.open("w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
-            # Header: left EMAIL HEADER_FIELDS + three outcome columns + 8 notes
-            hdr = HEADER_FIELDS + ["🙂","😐","☹️"] + [f"Note{i}" for i in range(1,9)]
+            hdr = HEADER_FIELDS + ["🙂","😐","🙁"] + [f"Note{i}" for i in range(1,9)]
             w.writerow(hdr)
+
 
 def load_dialer_leads_matrix():
     """Load dialer leads rows. If legacy header is detected, adapt best-effort."""
@@ -1776,25 +1974,21 @@ def load_dialer_leads_matrix():
     if not raw:
         return rows
     hdr = raw[0]
-    expected = HEADER_FIELDS + ["🙂","😐","☹️"] + [f"Note{i}" for i in range(1,9)]
-    # If headers match, simple load; else adapt columns where possible
+    expected = HEADER_FIELDS + ["🙂","😐","🙁"] + [f"Note{i}" for i in range(1,9)]
     idx_map = [hdr.index(h) if h in hdr else None for h in expected]
     for row in raw[1:]:
         out = []
         for i, idx in enumerate(idx_map):
             if idx is None:
-                # outcome cols default to hollow dots, notes blank
-                if i >= len(HEADER_FIELDS) and i < len(HEADER_FIELDS)+3:
+                if len(HEADER_FIELDS) <= i < len(HEADER_FIELDS)+3:
                     out.append("○")
                 else:
                     out.append("")
             else:
-                try:
-                    out.append(row[idx])
-                except Exception:
-                    out.append("")
+                out.append(row[idx] if idx < len(row) else "")
         rows.append(out)
     return rows
+
 
 def save_dialer_leads_matrix(matrix):
     """Save dialer grid with its own headers."""
@@ -1806,6 +2000,7 @@ def save_dialer_leads_matrix(matrix):
 # ============================================================
 # Customers CSV helpers
 # ============================================================
+
 
 def ensure_customers_file():
     """
@@ -1838,8 +2033,40 @@ def ensure_customers_file():
         _backup(CUSTOMERS_PATH)
         _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, migrated)
 
+
+# --- Derived fields for customers (Days, Sales/Day, normalized CLTV) ---
+
+def _derive_customer_fields(row_dict: dict):
+    """Compute Days and Sales/Day from First Order and CLTV. Returns updates dict (strings)."""
+    # Parse First Order date (supports YYYY-MM-DD, MM/DD/YYYY, etc.)
+    first_order_str = (row_dict.get("First Order", "") or "").strip()
+    first_dt = _parse_date_mmddyyyy(first_order_str)
+
+    # CLTV as float (handles $, commas)
+    cltv_f = _money_to_float(row_dict.get("CLTV", ""))
+
+    days_val = None
+    sales_per_day = None
+    if first_dt:
+        try:
+            days_val = max(1, (datetime.now().date() - first_dt).days)
+        except Exception:
+            days_val = None
+    if days_val:
+        sales_per_day = cltv_f / float(days_val) if days_val else None
+
+    updates = {}
+    # Keep CLTV normalized to money string (so file stays consistent)
+    updates["CLTV"] = _float_to_money(cltv_f) if cltv_f is not None else row_dict.get("CLTV", "")
+    if days_val is not None:
+        updates["Days"] = str(int(days_val))
+    if sales_per_day is not None:
+        updates["Sales/Day"] = _float_to_money(sales_per_day)
+    return updates
+
+
 def load_customers_matrix():
-    """Load customers.csv into a matrix matching CUSTOMER_FIELDS."""
+    """Load customers.csv into a matrix matching CUSTOMER_FIELDS, deriving missing fields on the fly."""
     ensure_customers_file()
     rows = []
     with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
@@ -1847,14 +2074,31 @@ def load_customers_matrix():
         if not rdr.fieldnames:
             return rows
         for r in rdr:
+            # Derive values for display if missing or stale (non-destructive; doesn't write back here)
+            try:
+                derived = _derive_customer_fields(r)
+                r = {**r, **{k: (derived.get(k) or r.get(k, "")) for k in ("CLTV","Days","Sales/Day")}}
+            except Exception:
+                pass
             rows.append([r.get(h, "") for h in CUSTOMER_FIELDS])
     return rows
 
+
 def save_customers_matrix(matrix):
-    """Save matrix to customers.csv with backup + atomic replace."""
+    """Save matrix to customers.csv with backup + atomic replace, recomputing derived fields per row."""
     ensure_customers_file()
+    # Convert to dicts, recompute derived fields, then write
+    out_rows = []
+    for row in matrix:
+        rd = {h: (row[i] if i < len(row) else "") for i, h in enumerate(CUSTOMER_FIELDS)}
+        try:
+            rd.update(_derive_customer_fields(rd))
+        except Exception:
+            pass
+        out_rows.append([rd.get(h, "") for h in CUSTOMER_FIELDS])
     _backup(CUSTOMERS_PATH)
-    _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, matrix)
+    _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, out_rows)
+
 
 def update_customer_row_fields_by_company(company, updates: dict):
     """
@@ -1877,6 +2121,11 @@ def update_customer_row_fields_by_company(company, updates: dict):
             for k,v in updates.items():
                 if k in CUSTOMER_FIELDS:
                     r[k] = v
+            # Also derive dependent fields based on new values
+            try:
+                r.update(_derive_customer_fields(r))
+            except Exception:
+                pass
             found = True
             break
 
@@ -1887,6 +2136,10 @@ def update_customer_row_fields_by_company(company, updates: dict):
         for k,v in updates.items():
             if k in CUSTOMER_FIELDS:
                 new_row[k] = v
+        try:
+            new_row.update(_derive_customer_fields(new_row))
+        except Exception:
+            pass
         rows.append(new_row)
 
     _backup(CUSTOMERS_PATH)
@@ -1905,11 +2158,13 @@ def update_customer_row_fields_by_company(company, updates: dict):
 if "ORDERS_PATH" not in globals():
     ORDERS_PATH = APP_DIR / "orders.csv"
 
+
 def ensure_orders_file():
     """Create orders.csv if missing."""
     if not ORDERS_PATH.exists():
         with ORDERS_PATH.open("w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(["Company","Order Date","Amount"])
+
 
 def _parse_date_mmddyyyy(s):
     s = (s or "").strip()
@@ -1930,6 +2185,7 @@ def _parse_date_mmddyyyy(s):
             pass
     return None
 
+
 def _money_to_float(val):
     s = (val or "").strip().replace(",", "").replace("$","")
     if not s:
@@ -1939,11 +2195,13 @@ def _money_to_float(val):
     except Exception:
         return 0.0
 
+
 def _float_to_money(x):
     try:
         return f"{float(x):.2f}"
     except Exception:
         return ""
+
 
 def append_order_row(company: str, order_date: str, amount: str):
     """
@@ -1969,17 +2227,19 @@ def append_order_row(company: str, order_date: str, amount: str):
 
     # Recompute stats and update customers.csv
     stats = compute_customer_order_stats(company)
-    # Prepare updates
+    # Prepare updates (align to CUSTOMER_FIELDS: "First Order", "Last Order")
+        # Prepare updates
     updates = {}
     if stats["first_order_date"]:
-        updates["First Order Date"] = stats["first_order_date"].strftime("%Y-%m-%d")
+        updates["First Order"] = stats["first_order_date"].strftime("%Y-%m-%d")   # <-- was First Order Date
     if stats["last_order_date"]:
-        updates["Last Order Date"] = stats["last_order_date"].strftime("%Y-%m-%d")
+        updates["Last Order"] = stats["last_order_date"].strftime("%Y-%m-%d")     # <-- was Last Order Date
     updates["CLTV"] = _float_to_money(stats["cltv"])
     updates["Days"] = str(stats["days_since_first"]) if stats["days_since_first"] is not None else ""
     updates["Sales/Day"] = _float_to_money(stats["sales_per_day"]) if stats["sales_per_day"] is not None else ""
 
     update_customer_row_fields_by_company(company, updates)
+
 
 def compute_customer_order_stats(company: str):
     """
@@ -2029,6 +2289,7 @@ def compute_customer_order_stats(company: str):
 # Utilities (placeholders, keys, fingerprints)
 # ============================================================
 
+
 def normalize_header_map(row_dict):
     norm = {}
     for k,v in row_dict.items():
@@ -2040,7 +2301,9 @@ def normalize_header_map(row_dict):
         norm[k2.replace(" ","_").lower()] = v
     return norm
 
+
 PLACEHOLDER_RE = re.compile(r"\{([^}]+)\}")
+
 
 def apply_placeholders(text, row_dict, profile=None):
     if not text:
@@ -2058,15 +2321,20 @@ def apply_placeholders(text, row_dict, profile=None):
         return "{"+token+"}"
     return PLACEHOLDER_RE.sub(repl, text)
 
+
 def dict_from_row(row):
     return {HEADER_FIELDS[i]: (row[i] if i < len(HEADER_FIELDS) else "") for i in range(len(HEADER_FIELDS))}
+
 
 def get_val(d, name):
     lower = { (k or "").lower(): v for k,v in d.items() }
     return lower.get((name or "").lower(), "") or ""
 
+
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 def valid_email(addr): return bool(addr and EMAIL_RE.match(addr))
+
 
 def row_fingerprint_from_dict(d):
     key = "|".join([
@@ -2077,12 +2345,14 @@ def row_fingerprint_from_dict(d):
     ])
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
+
 def choose_template_key(industry_value, mapping):
     ind = (industry_value or "").lower()
     for needle, key in mapping.items():
         if needle.lower() in ind:
             return key
     return "default"
+
 
 def blocks_to_html(text):
     text = text.replace("\r\n","\n")
@@ -2104,10 +2374,12 @@ CAMPAIGNS_PATH = APP_DIR / "campaigns.csv"     # per-ref state
 
 CAMPAIGNS_HEADERS = ["Ref","Email","Company","CampaignKey","Stage","DivertToDialer"]
 
+
 def ensure_campaigns_file():
     if not CAMPAIGNS_PATH.exists():
         with CAMPAIGNS_PATH.open("w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(CAMPAIGNS_HEADERS)
+
 
 def _read_campaign_rows():
     ensure_campaigns_file()
@@ -2117,6 +2389,7 @@ def _read_campaign_rows():
         for r in rdr:
             rows.append(r)
     return rows
+
 
 def _campaigns_write_rows(rows):
     """Writer used by Chunk 7 helpers."""
@@ -2129,6 +2402,7 @@ def _campaigns_write_rows(rows):
 
 # Back-compat alias (if any code still referenced the old name)
 _write_campaign_rows = _campaigns_write_rows
+
 
 def upsert_campaign_row(ref_short, email, company, campaign_key, stage=0, divert_to_dialer=0):
     rows = _read_campaign_rows()
@@ -2151,11 +2425,13 @@ def upsert_campaign_row(ref_short, email, company, campaign_key, stage=0, divert
         })
     _campaigns_write_rows(rows)
 
+
 def remove_campaign_by_ref(ref_short):
     rows = _read_campaign_rows()
     ref_l = (ref_short or "").lower()
     rows = [r for r in rows if (r.get("Ref","") or "").lower() != ref_l]
     _campaigns_write_rows(rows)
+
 
 def get_campaign_row(ref_short):
     ref_l = (ref_short or "").lower()
@@ -2163,6 +2439,7 @@ def get_campaign_row(ref_short):
         if (r.get("Ref","") or "").lower() == ref_l:
             return r
     return None
+
 
 def set_campaign_stage(ref_short, new_stage):
     rows = _read_campaign_rows()
@@ -2178,12 +2455,14 @@ def set_campaign_stage(ref_short, new_stage):
 # Outlook helpers (extended for single draft by ref)
 # ============================================================
 
+
 def require_pywin32():
     try:
         import win32com.client as win32  # noqa
         return True
     except Exception:
         return False
+
 
 def pick_store(session):
     store = session.DefaultStore
@@ -2205,6 +2484,7 @@ def pick_store(session):
                 store = st
                 break
     return store
+
 
 def outlook_draft_one(row_dict, subject_text, body_text, ref_short):
     """Create a single Outlook draft to row_dict['Email'] with given subject/body and [ref:xxxx]."""
@@ -2231,6 +2511,7 @@ def outlook_draft_one(row_dict, subject_text, body_text, ref_short):
     msg.HTMLBody = body_html
     msg.Save()
     msg.Move(target_folder)
+
 
 def outlook_draft_many(rows_matrix, seen_set, templates, subjects, mapping):
     import win32com.client as win32
@@ -2282,10 +2563,12 @@ def outlook_draft_many(rows_matrix, seen_set, templates, subjects, mapping):
 # Remainder (state/results/sync) from original:
 REF_RE = re.compile(r"\[ref:([0-9a-f]{6,12})\]", re.IGNORECASE)
 
+
 def load_state_set():
     if not STATE_PATH.exists():
         return set()
     return {line.strip() for line in STATE_PATH.read_text(encoding="utf-8").splitlines() if line.strip()}
+
 
 def load_results_rows_sorted():
     rows = []
@@ -2296,10 +2579,12 @@ def load_results_rows_sorted():
     rows.sort(key=sk, reverse=True)
     return rows
 
+
 def _results_lookup_by_ref():
     """Quick map: ref_lower -> row dict (results.csv)."""
     rows = load_results_rows_sorted()
     return { (r.get("Ref","") or "").lower(): r for r in rows }
+
 
 def _results_dates_for_ref(ref_short):
     """Return (sent_dt, replied_dt) as datetime or (None,None)."""
@@ -2320,6 +2605,7 @@ def _results_dates_for_ref(ref_short):
         return (None, None)
     return (_p(r.get("DateSent","")), _p(r.get("DateReplied","")))
 
+
 def _lead_row_from_email_company(email, company):
     """Try to find an original lead row in kybercrystals.csv for placeholders."""
     if not CSV_PATH.exists():
@@ -2337,6 +2623,7 @@ def _lead_row_from_email_company(email, company):
                 if (r.get("Company","").strip().lower() == comp_l):
                     return r
     return None
+
 
 def outlook_sync_results(lookback_days=60):
     import win32com.client as win32
@@ -2630,34 +2917,52 @@ def _campaign_stage_from_results_if_needed(ref_short, cur_stage):
     If Stage==0 but results.csv already has a DateSent, auto-bump to Stage 1.
     This keeps things consistent when app restarts after sending E1.
     """
-    if int(cur_stage or 0) > 0:
-        return int(cur_stage)
-    sent_dt, _ = _results_dates_for_ref(ref_short)
-    return 1 if sent_dt else 0
+    try:
+        if int(cur_stage or 0) > 0:
+            return int(cur_stage)
+    except Exception:
+        pass
+    # Check results cache for DateSent
+    try:
+        res_map = _read_results_by_ref()
+        r = res_map.get((ref_short or "").strip().lower())
+        sent_dt = _results_sent_dt(r) if r else None
+        return 1 if sent_dt else 0
+    except Exception:
+        return int(cur_stage or 0)
 
 def process_campaign_queue():
     """
     Runs quick checks:
       - If a ref has DateReplied -> remove from campaigns.
       - If stage==0 and DateSent exists -> set stage=1.
-      - If stage==1 and sent_dt + e2.delay due and no reply -> draft E2, stage=2.
-      - If stage==2 and sent_dt + e3.delay due and no reply -> draft E3, stage=3.
-      - If stage==3 and no reply and divert flag==1 -> push to Dialer & remove.
+      - If stage==1 and due and no reply -> draft E2 via _draft_next_stage_stub, stage=2.
+      - If stage==2 and due and no reply -> draft E3 via _draft_next_stage_stub, stage=3.
+      - If stage==3 and no reply and divert flag -> push to Dialer & remove.
     """
     ensure_campaigns_file()
-    cfg = load_campaigns_ini()
     rows = _read_campaign_rows()
     changed = False
+
+    # cache results for quick lookups
+    try:
+        res_map = _read_results_by_ref()
+    except Exception:
+        res_map = {}
 
     for r in rows[:]:
         ref = r.get("Ref","")
         key = r.get("CampaignKey","default")
-        divert = int(r.get("DivertToDialer","0") or 0)
-        stage = int(r.get("Stage","0") or 0)
+        # CSV field wins if set; otherwise fall back to campaign settings later
+        divert_csv = r.get("DivertToDialer", "")
+        try:
+            stage = int(r.get("Stage","0") or 0)
+        except Exception:
+            stage = 0
 
         # reply?
-        _sent, _replied = _results_dates_for_ref(ref)
-        if _replied:
+        res = res_map.get((ref or "").strip().lower())
+        if res and _results_replied(res):
             # remove from campaign immediately
             rows.remove(r)
             changed = True
@@ -2668,46 +2973,52 @@ def process_campaign_queue():
         if new_stage != stage:
             r["Stage"] = str(new_stage); stage = new_stage; changed = True
 
-        # no campaign config? skip
-        camp = cfg.get(key, cfg.get("default", {}))
-        if not camp:
-            continue
+        # Load per-key campaign (steps + settings)
+        try:
+            steps, settings = load_campaign_by_key(key)
+            steps = normalize_campaign_steps(steps)
+            settings = normalize_campaign_settings(settings)
+        except Exception:
+            steps, settings = normalize_campaign_steps([]), normalize_campaign_settings({})
 
-        # compute if next is due
+        # compute effective divert setting
+        try:
+            divert_effective = (str(divert_csv).strip() in ("1","true","True"))
+            if str(divert_csv).strip() == "":
+                divert_effective = (settings.get("send_to_dialer_after") in ("1", True))
+        except Exception:
+            divert_effective = (settings.get("send_to_dialer_after") in ("1", True))
+
+        # compute if next is due -> delegate drafting to the stub that enforces delays
         if stage == 1:
             # next: E2
-            delay = int(camp.get("e2_delay_days", 3) or 3)
-            if _sent and (datetime.now() - _sent).days >= delay:
-                # draft E2
-                lead = _campaign_get_lead_row_for_ref(r)
-                subj = apply_placeholders(camp.get("e2_subject",""), lead)
-                body = apply_placeholders(camp.get("e2_body",""), lead)
-                try:
-                    if require_pywin32():
-                        outlook_draft_one(lead, subj, body, ref)
-                        r["Stage"] = "2"
-                        changed = True
-                except Exception:
-                    pass
+            lead = _campaign_get_lead_row_for_ref(r)
+            try:
+                drafted = globals().get("_draft_next_stage_stub", lambda *a, **k: False)(
+                    ref, lead.get("Email",""), lead.get("Company",""), key, 2
+                )
+                if drafted:
+                    r["Stage"] = "2"
+                    changed = True
+            except Exception:
+                pass
 
         elif stage == 2:
             # next: E3
-            delay = int(camp.get("e3_delay_days", 7) or 7)
-            if _sent and (datetime.now() - _sent).days >= delay:
-                lead = _campaign_get_lead_row_for_ref(r)
-                subj = apply_placeholders(camp.get("e3_subject",""), lead)
-                body = apply_placeholders(camp.get("e3_body",""), lead)
-                try:
-                    if require_pywin32():
-                        outlook_draft_one(lead, subj, body, ref)
-                        r["Stage"] = "3"
-                        changed = True
-                except Exception:
-                    pass
+            lead = _campaign_get_lead_row_for_ref(r)
+            try:
+                drafted = globals().get("_draft_next_stage_stub", lambda *a, **k: False)(
+                    ref, lead.get("Email",""), lead.get("Company",""), key, 3
+                )
+                if drafted:
+                    r["Stage"] = "3"
+                    changed = True
+            except Exception:
+                pass
 
         elif stage >= 3:
             # completed all emails; if no reply and divert, push to Dialer once then remove
-            if divert == 1:
+            if not (res and _results_replied(res)) and divert_effective:
                 lead = _campaign_get_lead_row_for_ref(r)
                 try:
                     ensure_dialer_leads_file()
@@ -2738,6 +3049,7 @@ def process_campaign_queue():
 # (No event loop here)
 # ============================================================
 
+
 def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
     # ---------- Scoreboard helpers ----------
     from datetime import datetime as _dt
@@ -2755,12 +3067,18 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             return "$0.00"
 
     def _parse_any_date(s):
-        """Return date() from a wide range of formats or None."""
         if not s:
             return None
         s = str(s).strip()
         if not s:
             return None
+        try:
+            if "_parse_any_datetime" in globals() and callable(globals()["_parse_any_datetime"]):
+                dt = globals()["_parse_any_datetime"](s)
+                if dt:
+                    return dt.date()
+        except Exception:
+            pass
         s2 = s.replace(",", " ")
         fmts = [
             "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m-%d-%Y",
@@ -2777,13 +3095,12 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             except Exception:
                 continue
         try:
-            from dateutil import parser as _p  # optional
+            from dateutil import parser as _p
             return _p.parse(s2).date()
         except Exception:
             return None
 
     def _file_rows(path):
-        """Yield DictReader rows from a CSV file if it exists."""
         try:
             if path.exists():
                 with path.open("r", encoding="utf-8", newline="") as f:
@@ -2800,86 +3117,55 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             return 0.0
 
     def compute_daily_metrics():
-        """Compute Daily Activity numbers from CSVs."""
         today = _dt.now().date()
-
-        # Calls (dialer_results.csv)
         calls = 0
         for r in _file_rows(DIALER_RESULTS_PATH):
             d = _parse_any_date(r.get("Timestamp", ""))
             if d == today:
                 calls += 1
-
-        # Emails sent today (results.csv -> DateSent)
         emails = 0
         for r in _file_rows(RESULTS_PATH):
             d = _parse_any_date(r.get("DateSent", ""))
             if d == today:
                 emails += 1
-
-        # New warm leads today
         new_warm = 0
         for r in _file_rows(WARM_LEADS_PATH):
             d = _parse_any_date(r.get("First Contact", "") or r.get("Timestamp", ""))
             if d == today:
                 new_warm += 1
-
-        # New accounts today
         new_accounts = 0
         for r in _file_rows(CUSTOMERS_PATH):
             d = _parse_any_date(r.get("Customer Since", ""))
             if d == today:
                 new_accounts += 1
-
-        # Daily sales (orders.csv -> Order Date)
         daily_sales = 0.0
         for r in _file_rows(ORDERS_PATH):
             d = _parse_any_date(r.get("Order Date", ""))
             if d == today:
                 daily_sales += _float_val(r.get("Amount", ""))
-
-        return {
-            "calls": calls,
-            "emails": emails,
-            "new_warm": new_warm,
-            "new_accounts": new_accounts,
-            "daily_sales": daily_sales,
-        }
+        return {"calls": calls, "emails": emails, "new_warm": new_warm, "new_accounts": new_accounts, "daily_sales": daily_sales}
 
     def compute_monthly_metrics():
-        """Compute Monthly Results numbers for the current month."""
         now = _dt.now()
         y, m = now.year, now.month
-
-        # New Warm Leads this month
         mo_warm = 0
         for r in _file_rows(WARM_LEADS_PATH):
             d = _parse_any_date(r.get("First Contact", "") or r.get("Timestamp", ""))
             if d and d.year == y and d.month == m:
                 mo_warm += 1
-
-        # New Customers this month
         mo_newcus = 0
         for r in _file_rows(CUSTOMERS_PATH):
             d = _parse_any_date(r.get("Customer Since", ""))
             if d and d.year == y and d.month == m:
                 mo_newcus += 1
-
-        # Total Sales this month
         mo_sales = 0.0
         for r in _file_rows(ORDERS_PATH):
             d = _parse_any_date(r.get("Order Date", ""))
             if d and d.year == y and d.month == m:
                 mo_sales += _float_val(r.get("Amount", ""))
-
-        return {
-            "mo_warm": mo_warm,
-            "mo_newcus": mo_newcus,
-            "mo_sales": mo_sales,
-        }
+        return {"mo_warm": mo_warm, "mo_newcus": mo_newcus, "mo_sales": mo_sales}
 
     def update_scoreboards(window):
-        """Refresh both Daily Activity and Monthly Results labels."""
         try:
             d = compute_daily_metrics()
             m = compute_monthly_metrics()
@@ -2892,7 +3178,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             if (el := _safe_get(window, "-MO_NEWCUS-")): el.update(str(m["mo_newcus"]))
             if (el := _safe_get(window, "-MO_SALES-")): el.update(_fmt_money(m["mo_sales"]))
         except Exception:
-            pass  # never crash UI on scoreboard refresh
+            pass
+  # never crash UI on scoreboard refresh
 
     def _start_scoreboard_timer(window, interval_ms=4925):
         """Use Tk after() to refresh scoreboards periodically."""
@@ -3061,14 +3348,26 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             window["-CAMP_SEND_TO_DIALER-"].update(bool(settings.get("send_to_dialer_after") in ("1", True)))
 
     def _camp_refresh_combo_and_table(window):
+        # 3c: load keys robustly and always ensure at least ["default"]
         try:
             keys = list_campaign_keys()
         except Exception:
+            keys = []
+        if not keys:
             keys = ["default"]
+
+        # Keep the current selection if possible; otherwise pick first
+        current = None
+        try:
+            if "-CAMP_KEY-" in window.AllKeysDict:
+                current = (window["-CAMP_KEY-"].get() or "").strip()
+        except Exception:
+            current = None
+        if not current or current not in keys:
+            current = keys[0]
 
         # Update combo
         if "-CAMP_KEY-" in window.AllKeysDict:
-            current = window["-CAMP_KEY-"].get() or (keys[0] if keys else "default")
             window["-CAMP_KEY-"].update(values=keys, value=current)
 
         # Update table
@@ -3421,7 +3720,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     comp = (r.get("Company","") or "").strip()
                     amt = r.get("Amount","") or ""
                     try:
-                        val = float(str(amt).replace(",","").strip() or "0")
+                        val = float(str(amt).replace(",", "").strip() or "0")
                     except Exception:
                         val = 0.0
                     if comp:
@@ -3442,7 +3741,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         if non_empty:
                             warm_leads += 1
                         try:
-                            samples_sum += float((r.get("Cost ($)","") or "0").replace(",","").strip() or "0")
+                            samples_sum += float((r.get("Cost ($)","") or "0").replace(",", "").strip() or "0")
                         except Exception:
                             pass
         except Exception:
@@ -3486,7 +3785,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 new_customers += 1
             # LTV + total sales
             try:
-                v = float((rec.get("CLTV","") or "").replace(",","").strip() or "0")
+                v = float((rec.get("CLTV","") or "").replace(",", "").strip() or "0")
                 if v > 0:
                     ltv_vals.append(v)
                     total_sales += v
@@ -4317,8 +4616,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 continue
 
             stats = compute_customer_order_stats(company)
-            idx_fod  = _cust_idx("First Order Date")
-            idx_lod  = _cust_idx("Last Order Date")
+            idx_fod  = _cust_idx("First Order")
+            idx_lod  = _cust_idx("Last Order")
             idx_cltv = _cust_idx("CLTV")
             idx_days = _cust_idx("Days")
             idx_spd  = _cust_idx("Sales/Day")
@@ -4482,12 +4781,11 @@ def _draft_one_outlook(ref_short: str, email: str, subj_text: str, body_text: st
 
 # ---------- Placeholders & row dict ----------
 def _rowdict_for_placeholders(results_row: dict):
-    # Ensure common placeholders exist (keys must match HEADER_FIELDS keys)
+    """Prefer the original lead row (for First Name, etc.)."""
+    lead = _lead_row_from_email_company(results_row.get("Email",""), results_row.get("Company",""))
+    if lead:
+        return lead
     d = {h: "" for h in HEADER_FIELDS}
-    for k in ("Email","Company","Industry","First Name","First_Name","FirstName"):
-        if k in d:
-            d[k] = results_row.get(k, "")
-    # Always ensure Email/Company/Industry present
     d["Email"] = results_row.get("Email","")
     d["Company"] = results_row.get("Company","")
     d["Industry"] = results_row.get("Industry","")
@@ -4559,6 +4857,18 @@ def _get_subject_body_for_stage(campaign_key: str, stage_num: int):
         body = body_defaults[idx]
     return subj, body
 
+# ---------- Missing helpers for multi-campaign migration ----------
+def _read_results_by_ref():
+    """ref_lower -> results row dict"""
+    rows = load_results_rows_sorted()
+    return { (r.get("Ref","") or "").lower(): r for r in rows }
+
+def _results_replied(r: dict) -> bool:
+    return bool(_parse_any_datetime(r.get("DateReplied","")))
+
+def _results_sent_dt(r: dict):
+    return _parse_any_datetime(r.get("DateSent",""))
+
 # ---------- Public: replaces stub referenced by hourly task ----------
 def draft_next_stage_from_config(ref: str, email: str, company: str,
                                  campaign_key: str, next_stage: int) -> bool:
@@ -4581,6 +4891,11 @@ def draft_next_stage_from_config(ref: str, email: str, company: str,
         if _results_replied(r):
             return False
 
+        # Ensure a target email; prefer arg, fall back to results.csv
+        target_email = (email or "").strip() or (r.get("Email","") or "").strip()
+        if not target_email:
+            return False
+
         # Stage 1 drafts typically created at send time; only gate delays for 2/3
         if next_stage in (2, 3):
             if not _is_due_for_next(r, next_stage, campaign_key):
@@ -4591,7 +4906,7 @@ def draft_next_stage_from_config(ref: str, email: str, company: str,
         subj_text = apply_placeholders(subj_tpl, rowd)
         body_text = apply_placeholders(body_tpl, rowd)
 
-        _draft_one_outlook(ref, email, subj_text, body_text)
+        _draft_one_outlook(ref, target_email, subj_text, body_text)
         return True
     except Exception:
         return False
@@ -4642,6 +4957,7 @@ if __name__ == "__main__":
         input("\n\n[ERROR] Press Enter to exit...")
 
 # ===== CHUNK 7 / 7 — END =====
+
 
 
 

@@ -68,16 +68,27 @@ WARM_FIELDS = [
     "Call 13 Date","Call 13 Notes","Call 14 Date","Call 14 Notes"
 ]
 
-# Customers sheet headers (UPDATED schema to match UI + logic)
+# Customers sheet headers (FINAL ORDER with address block + simplified fields)
 CUSTOMER_FIELDS = [
-    # Identity / contact (to mirror Warm columns for promotion)
-    "Company","Prospect Name","Phone #","Email","Location","Industry",
-    "Google Reviews","Rep","Samples?","Timestamp",
-    # Commercial lifecycle
-    "Opening Order $","Customer Since",
-    "First Order Date","Last Order Date","First Contact","Days To Close",
-    # Sales metrics
-    "CLTV","Sku's Ordered","Notes","Reorder?","Days","Sales/Day","Notes 2"
+    "Company",
+    "Prospect Name",
+    "Phone #",
+    "Email",
+    "Industry",
+    "Address",
+    "City",
+    "State",
+    "ZIP",
+    "CLTV",
+    "Sales/Day",
+    "Reorder?",
+    "First Order",
+    "Last Order",
+    "Days",
+    "First Contact",
+    "Days To Close",
+    "Sku's",
+    "Notes",
 ]
 
 # -------------------- UI tuning -----------------------------
@@ -1228,13 +1239,22 @@ def main():
     )
 
     customers_tab = [
-        [sg.Column([[customers_host],
-                    [sg.Column([customers_buttons_under], pad=(0, 0))]],
-                   expand_x=True, expand_y=True),
-         sg.Column([[analytics_panel]],
-                   vertical_alignment="top",
-                   pad=((10, 0), (0, 0)),
-                   size=(320, 340))]
+        [
+            sg.Column(
+                [
+                    [customers_host],
+                    [sg.Column([customers_buttons_under], pad=(0, 0))]
+                ],
+                expand_x=True,
+                expand_y=True
+            ),
+            sg.Column(
+                [[analytics_panel]],
+                vertical_alignment="top",
+                pad=((10, 0), (0, 0)),
+                size=(320, 340)
+            )
+        ]
     ]
 
     # -------- Compose full layout --------
@@ -1337,11 +1357,13 @@ def main():
         show_y_scrollbar=True
     )
     sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
+        "single_select", "cell_select",
         "drag_select", "column_drag_and_drop", "row_drag_and_drop",
         "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
         "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "column_width_resize", "column_resize", "resize_columns",
+        # Navigation
+        "arrowkeys", "tab"
     ))
     try:
         sheet.set_options(
@@ -1355,7 +1377,6 @@ def main():
     sheet.pack(fill="both", expand=True)
     for c in range(len(LEADS_HEADERS_DISPLAY)):
         try:
-            # give Emails Sent a little extra width
             width = 120 if LEADS_HEADERS_DISPLAY[c] == "Emails Sent" else DEFAULT_COL_WIDTH
             sheet.column_width(c, width=width)
         except Exception:
@@ -1381,7 +1402,6 @@ def main():
                 n = int(str(v).strip() or "0")
             except Exception:
                 n = 0
-            # colors: 0 white, 1 light gray, 2 gray, 3+ dark gray
             bg = "#FFFFFF"
             fg = "#000000"
             if n == 1:
@@ -1419,10 +1439,12 @@ def main():
         show_y_scrollbar=True
     )
     dial_sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
+        "single_select", "cell_select",
         "drag_select", "copy", "cut", "delete", "undo",
         "edit_cell", "return_edit_cell", "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "column_width_resize", "column_resize", "resize_columns",
+        # Navigation
+        "arrowkeys", "tab"
     ))
     try:
         dial_sheet.set_options(
@@ -1461,7 +1483,7 @@ def main():
         if c == idx_reviews: width = 60
         if c == idx_website: width = 160
         if first_dot <= c < first_note:
-            width = 42  # <<< slightly wider so the centered dot looks perfect
+            width = 42
         if first_note <= c <= last_note:
             width = 120
         try:
@@ -1469,7 +1491,7 @@ def main():
         except Exception:
             pass
 
-    # Center-align the three outcome columns "○/●"
+    # Center-align the three outcome columns
     try:
         outcome_cols = [first_dot, first_dot + 1, first_dot + 2]
         try:
@@ -1536,11 +1558,13 @@ def main():
         show_y_scrollbar=True
     )
     warm_sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
+        "single_select", "cell_select",
         "drag_select", "column_drag_and_drop", "row_drag_and_drop",
         "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
         "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "column_width_resize", "column_resize", "resize_columns",
+        # Navigation
+        "arrowkeys", "tab"
     ))
     try:
         warm_sheet.set_options(
@@ -1604,11 +1628,13 @@ def main():
         show_y_scrollbar=True
     )
     customer_sheet.enable_bindings((
-        "single_select", "row_select", "column_select",
+        "single_select", "cell_select",
         "drag_select", "column_drag_and_drop", "row_drag_and_drop",
         "copy", "cut", "delete", "undo", "edit_cell", "return_edit_cell",
         "select_all", "right_click_popup_menu",
-        "column_width_resize", "column_resize", "resize_columns"
+        "column_width_resize", "column_resize", "resize_columns",
+        # Navigation
+        "arrowkeys", "tab"
     ))
     try:
         customer_sheet.set_options(
@@ -1631,6 +1657,80 @@ def main():
             customer_sheet.column_width(c, width=width)
         except Exception:
             pass
+
+    # Freeze the first column (Company) so it stays visible while scrolling horizontally
+    try:
+        customer_sheet.freeze_columns(1)
+    except Exception:
+        try:
+            customer_sheet.set_options(frozen_columns=1)
+        except Exception:
+            pass
+
+    # ---- AUTO-CALC: Days & Sales/Day; format CLTV & Sales/Day as money ----
+    def _recalc_customer_row_metrics():
+        try:
+            headers = list(CUSTOMER_FIELDS)
+            idx_first = headers.index("First Order") if "First Order" in headers else headers.index("First Order Date")
+            idx_days  = headers.index("Days") if "Days" in headers else None
+            idx_cltv  = headers.index("CLTV")
+            idx_spd   = headers.index("Sales/Day") if "Sales/Day" in headers else None
+        except Exception:
+            return
+        try:
+            total_rows = customer_sheet.get_total_rows()
+        except Exception:
+            total_rows = len(customers_matrix)
+        today = datetime.now().date()
+        for r in range(total_rows):
+            try:
+                first_raw = str(customer_sheet.get_cell_data(r, idx_first) or "").strip()
+            except Exception:
+                first_raw = ""
+            d0 = _parse_date_mmddyyyy(first_raw)
+            days_val = ""
+            if d0:
+                try:
+                    days_n = max(1, (today - d0).days)
+                except Exception:
+                    days_n = ""
+                days_val = str(days_n)
+            if idx_days is not None and days_val != "":
+                try:
+                    customer_sheet.set_cell_data(r, idx_days, days_val)
+                except Exception:
+                    pass
+            # CLTV money format + Sales/Day
+            try:
+                cltv_raw = str(customer_sheet.get_cell_data(r, idx_cltv) or "")
+            except Exception:
+                cltv_raw = ""
+            cltv_f = _money_to_float(cltv_raw)
+            # write back formatted CLTV (money)
+            try:
+                customer_sheet.set_cell_data(r, idx_cltv, f"${cltv_f:,.2f}" if cltv_f else "")
+            except Exception:
+                pass
+            if idx_spd is not None and days_val and cltv_f is not None:
+                try:
+                    dn = int(days_val)
+                    spd = (cltv_f / dn) if dn else 0.0
+                    customer_sheet.set_cell_data(r, idx_spd, f"${spd:,.2f}" if spd else "")
+                except Exception:
+                    pass
+        try:
+            customer_sheet.refresh()
+        except Exception:
+            pass
+
+    # Initial calc + bind lightweight triggers
+    _recalc_customer_row_metrics()
+    try:
+        customer_sheet.MT.bind("<KeyRelease>", lambda e: (_recalc_customer_row_metrics(), "break"))
+        customer_sheet.MT.bind("<ButtonRelease-1>", lambda e: (_recalc_customer_row_metrics(), "break"))
+        customer_sheet.MT.bind("<FocusOut>", lambda e: (_recalc_customer_row_metrics(), "break"))
+    except Exception:
+        pass
 
     _bind_plaintext_paste_for_tksheet(customer_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(customer_sheet, window.TKroot)
