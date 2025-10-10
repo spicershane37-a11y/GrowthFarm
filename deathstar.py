@@ -69,6 +69,7 @@ WARM_FIELDS = [
 ]
 
 # Customers sheet headers (FINAL ORDER with address block + simplified fields)
+# NOTE: Lat/Lon are included directly after ZIP so the Map tab can read them.
 CUSTOMER_FIELDS = [
     "Company",
     "Prospect Name",
@@ -79,6 +80,8 @@ CUSTOMER_FIELDS = [
     "City",
     "State",
     "ZIP",
+    "Lat",      # <-- added
+    "Lon",      # <-- added
     "CLTV",
     "Sales/Day",
     "Reorder?",
@@ -90,6 +93,17 @@ CUSTOMER_FIELDS = [
     "Sku's",
     "Notes",
 ]
+
+# Safety guard: if another build overrode CUSTOMER_FIELDS without Lat/Lon, append them.
+if "Lat" not in CUSTOMER_FIELDS:
+    CUSTOMER_FIELDS.insert(9, "Lat")
+if "Lon" not in CUSTOMER_FIELDS:
+    # ensure Lon immediately follows Lat
+    lat_index = CUSTOMER_FIELDS.index("Lat")
+    if "Lon" in CUSTOMER_FIELDS:
+        pass
+    else:
+        CUSTOMER_FIELDS.insert(lat_index + 1, "Lon")
 
 # -------------------- UI tuning -----------------------------
 START_ROWS = 200
@@ -1070,7 +1084,9 @@ def main():
             stps = normalize_campaign_steps(stps)
         except Exception:
             return ""
-        subjects_set = {(s.get("subject", "") or "").strip() for s in stps if (s.get("subject", "") or "").strip()}
+        subjects_set = {(s.get("subject", "") or "").strip()
+                        for s in stps
+                        if (s.get("subject", "") or "").strip()}
         if not subjects_set:
             return ""
         try:
@@ -1192,7 +1208,7 @@ def main():
     ensure_dialer_files()
     ensure_no_interest_file()
 
-    # >>> NEW: use 🙁 (not ☹️) so emoji sizes are uniform
+    # use 🙁 so emoji sizes are uniform
     DIALER_EXTRA_COLS = ["🙂", "😐", "🙁", "Note1", "Note2", "Note3", "Note4", "Note5", "Note6", "Note7", "Note8"]
     DIALER_HEADERS = HEADER_FIELDS + DIALER_EXTRA_COLS
 
@@ -1257,7 +1273,6 @@ def main():
     ]
 
     warm_buttons_under = [
-        sg.Button("Save Warm Leads", key="-WARM_SAVE-"),
         sg.Button("Export Warm Leads CSV", key="-WARM_EXPORT-"),
         sg.Button("Reload Warm", key="-WARM_RELOAD-"),
         sg.Button("Add 100 Rows", key="-WARM_ADD100-"),
@@ -1285,7 +1300,6 @@ def main():
     )
 
     customers_buttons_under = [
-        sg.Button("Save Customers", key="-CUST_SAVE-"),
         sg.Button("Export Customers CSV", key="-CUST_EXPORT-"),
         sg.Button("Reload Customers", key="-CUST_RELOAD-"),
         sg.Button("Add 50 Rows", key="-CUST_ADD50-"),
@@ -1329,9 +1343,18 @@ def main():
                    size=(320, 340))]
     ]
 
+    # -------- Map tab (launches an interactive HTML map) --------
+    map_tab = [
+        [sg.Text("Customer Map", text_color="#9EE493", font=("Segoe UI", 14, "bold"))],
+        [sg.Text("Opens a live Leaflet map with pins for each geocoded customer (Company, CLTV, Sales/Day).",
+                 text_color="#CCCCCC")],
+        [sg.Button("🗺️ Open Customer Map", key="-OPEN_MAP-", button_color=("white", "#2D6CDF"), size=(24, 2)),
+         sg.Text("", key="-MAP_STATUS-", text_color="#A0FFA0")]
+    ]
+
     # -------- Compose full layout --------
     SB_LEFT_PAD = (500, 0)
-    SB_TOP_PAD  = (50, 6)   # << you can nudge this to move the scoreboards up/down
+    SB_TOP_PAD  = (50, 6)
 
     scoreboards_row = [
         sg.Column(
@@ -1350,7 +1373,8 @@ def main():
                        sg.Tab("Email Results",   results_tab,   expand_x=True, expand_y=True),
                        sg.Tab("Dialer",          dialer_tab,    expand_x=True, expand_y=True),
                        sg.Tab("Warm Leads",      warm_tab,      expand_x=True, expand_y=True),
-                       sg.Tab("Customers",       customers_tab, expand_x=True, expand_y=True)]],
+                       sg.Tab("Customers",       customers_tab, expand_x=True, expand_y=True),
+                       sg.Tab("Map",             map_tab,       expand_x=True, expand_y=True)]],
                      expand_x=True, expand_y=True)]
     ]
 
@@ -1366,7 +1390,7 @@ def main():
         popup_error("tksheet not installed. Run: pip install tksheet")
         return
 
-    # ========== Email Leads sheet in leads_host ==========
+    # ========== Email Leads sheet ==========
     host_frame_tk = leads_host.Widget
     for child in host_frame_tk.winfo_children():
         try:
@@ -1376,7 +1400,6 @@ def main():
     sheet_holder = sg.tk.Frame(host_frame_tk, bg="#111111")
     sheet_holder.pack(side="top", fill="both", expand=True)
 
-    # Helper to count emails-sent for an address (0..3+)
     def _count_emails_sent_for_addr(addr: str) -> int:
         a = (addr or "").strip().lower()
         if not a:
@@ -1398,9 +1421,7 @@ def main():
             for r in rdr:
                 existing.append([r.get(h, "") for h in HEADER_FIELDS])
 
-    # >>> NEW: display headers include an "Emails Sent" column at the end
     LEADS_HEADERS_DISPLAY = HEADER_FIELDS + ["Emails Sent"]
-    email_idx = None
     try:
         email_idx = HEADER_FIELDS.index("Email")
     except Exception:
@@ -1411,7 +1432,6 @@ def main():
     else:
         base = [[""] * len(HEADER_FIELDS) for _ in range(START_ROWS)]
 
-    # Build display data with "Emails Sent" values
     data_display = []
     for row in base:
         try:
@@ -1430,12 +1450,9 @@ def main():
     )
     sheet.enable_bindings((
         "single_select",
-        # keyboard navigation
         "arrowkeys", "tab_key", "shift_tab_key",
-        # selection & editing
         "drag_select", "copy", "cut", "delete", "undo",
         "edit_cell", "return_edit_cell", "select_all",
-        # menus & resizing
         "right_click_popup_menu", "column_width_resize", "column_resize", "resize_columns"
     ))
     try:
@@ -1459,7 +1476,6 @@ def main():
     _ensure_rc_menu_plain_paste(sheet, window.TKroot)
     _enable_column_resizing(sheet)
 
-    # Apply color rules for the "Emails Sent" column
     def _apply_emails_sent_coloring(_sheet):
         try:
             total_rows = _sheet.get_total_rows()
@@ -1530,7 +1546,6 @@ def main():
         pass
     dial_sheet.pack(fill="both", expand=True)
 
-    # Set dialer column widths
     def _idx(colname, default=None):
         try:
             return DIALER_HEADERS.index(colname)
@@ -1562,7 +1577,6 @@ def main():
         except Exception:
             pass
 
-    # Center-align the three outcome columns "○/●"
     try:
         outcome_cols = [first_dot, first_dot + 1, first_dot + 2]
         try:
@@ -1583,7 +1597,7 @@ def main():
     _ensure_rc_menu_plain_paste(dial_sheet, window.TKroot)
     _enable_column_resizing(dial_sheet)
 
-    # ========== Warm grid (tksheet) ==========
+    # ========== Warm grid ==========
     warm_host_tk = warm_host.Widget
     for child in warm_host_tk.winfo_children():
         try:
@@ -1662,7 +1676,7 @@ def main():
     _ensure_rc_menu_plain_paste(warm_sheet, window.TKroot)
     _enable_column_resizing(warm_sheet)
 
-    # ========== Customers grid (tksheet) ==========
+    # ========== Customers grid ==========
     cust_host_tk = customers_host.Widget
     for child in cust_host_tk.winfo_children():
         try:
@@ -1683,22 +1697,28 @@ def main():
     if len(customers_matrix) < 50:
         customers_matrix += [[""] * len(CUSTOMER_FIELDS) for _ in range(50 - len(customers_matrix))]
 
-      # --- Auto-calc Days and Sales/Day (Sales/Day ONLY from CLTV; Orders can refresh CLTV/dates)
+    # --- Auto-calc Days & Sales/Day (Days from First Order only; CLTV left blank if empty)
     try:
         from datetime import datetime as _dt
 
         def _parse_date_local(s):
+            """Return date() from many common formats, incl. 2-digit years and MD without year."""
             s = (s or "").strip()
             if not s:
                 return None
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%Y/%m/%d", "%m/%d", "%m-%d"):
+            fmts = (
+                "%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%Y/%m/%d",
+                "%m/%d/%y", "%m-%d-%y", "%y-%m-%d",
+                "%m/%d", "%m-%d"
+            )
+            for fmt in fmts:
                 try:
                     d = _dt.strptime(s, fmt)
                     if fmt in ("%m/%d", "%m-%d"):
                         d = d.replace(year=_dt.now().year)
                     return d.date()
                 except Exception:
-                    pass
+                    continue
             return None
 
         def _money_to_float_local(val):
@@ -1738,16 +1758,16 @@ def main():
                 stats = None
 
             if stats:
-                # If orders provided dates, prefer them
                 if stats.get("first_order_date") and i_first is not None:
                     row[i_first] = stats["first_order_date"].strftime("%Y-%m-%d")
                 if stats.get("last_order_date") and i_last is not None:
                     row[i_last] = stats["last_order_date"].strftime("%Y-%m-%d")
-                # Orders can update CLTV number; we still compute Sales/Day from CLTV below
                 if i_cltv is not None:
-                    row[i_cltv] = _float_to_money_local(stats.get("cltv", 0.0))
+                    cltv_from_orders = float(stats.get("cltv", 0.0) or 0.0)
+                    if cltv_from_orders > 0:
+                        row[i_cltv] = _float_to_money_local(cltv_from_orders)
 
-            # 2) Compute Days from First Order (row value after refresh / or existing)
+            # 2) Compute Days from First Order ONLY
             first_dt = _parse_date_local(row[i_first] if i_first is not None else "")
             if first_dt and i_days is not None:
                 days = max(1, (today - first_dt).days)
@@ -1757,21 +1777,25 @@ def main():
                 if i_days is not None:
                     row[i_days] = ""
 
-            # 3) Compute Sales/Day strictly from CLTV ÷ Days (no direct orders usage)
+            # 3) Compute Sales/Day strictly from CLTV ÷ Days
             if i_salesday is not None:
                 if days:
-                    cltv_val = _money_to_float_local(row[i_cltv] if i_cltv is not None else "")
-                    row[i_salesday] = _float_to_money_local(cltv_val / float(days)) if days else ""
+                    cltv_raw = (row[i_cltv] if i_cltv is not None else "")
+                    cltv_val = _money_to_float_local(cltv_raw)
+                    row[i_salesday] = _float_to_money_local(cltv_val / float(days)) if (days and cltv_val > 0) else ""
                 else:
                     row[i_salesday] = ""
 
-            # 4) Ensure CLTV cell is money-formatted (even if user typed a raw number)
+            # 4) Ensure CLTV cell is money-formatted ONLY if non-empty
             if i_cltv is not None:
-                row[i_cltv] = _float_to_money_local(_money_to_float_local(row[i_cltv]))
+                raw = (row[i_cltv] or "").strip()
+                if raw != "":
+                    row[i_cltv] = _float_to_money_local(_money_to_float_local(raw))
+
     except Exception:
         pass
 
-
+    # ---- Mount CustomerSheet
     try:
         from tksheet import Sheet as CustomerSheet
     except Exception:
@@ -1814,11 +1838,29 @@ def main():
         except Exception:
             pass
 
-    # Freeze the first column (Company)
-    try:
-        customer_sheet.freeze_columns(1)
-    except Exception:
-        pass
+    # Freeze the first column (Company) – try several APIs for different tksheet versions
+    _froze_ok = False
+    for fn_name, arg in (
+        ("freeze_columns", 1),        # modern API
+        ("set_frozen_columns", 1),    # alt API
+        ("freeze", (1, 0)),           # some builds expect (cols, rows)
+    ):
+        try:
+            fn = getattr(customer_sheet, fn_name, None)
+            if callable(fn):
+                if isinstance(arg, tuple):
+                    fn(*arg)
+                else:
+                    fn(arg)
+                _froze_ok = True
+                break
+        except Exception:
+            pass
+    if not _froze_ok:
+        try:
+            customer_sheet.set_options(frozen_columns=1)  # legacy fallback
+        except Exception:
+            pass
 
     _bind_plaintext_paste_for_tksheet(customer_sheet, window.TKroot)
     _ensure_rc_menu_plain_paste(customer_sheet, window.TKroot)
@@ -3036,23 +3078,30 @@ def process_campaign_queue():
         _write_campaign_rows(rows)
 
 # ===== CHUNK 4 / 7 — END =====
-# ===== CHUNK 5 / 7 — START =====
+# ===== CHUNK 5a / 7 — START =====
 # ============================================================
-# main_after_mount helpers
+# main_after_mount helpers (Part A)
 # - Scoreboard helpers
 # - Dialer helper shims
 # - Warm helpers
 # - Campaigns UI helpers
 # - Live-sheet extractors
-# - Dialer/Warm/Customer state + save helpers
-# - Customer analytics
+# - Dialer state + save helpers
 # (No event loop here)
 # ============================================================
-
 
 def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
     # ---------- Scoreboard helpers ----------
     from datetime import datetime as _dt
+    import time, csv, os, json
+    from pathlib import Path
+
+    # Paths (sidecar for hidden geo persistence if Lat/Lon cols aren’t present)
+    try:
+        base_dir = APP_DIR
+    except Exception:
+        base_dir = Path.cwd()
+    CUSTOMER_GEO_PATH = base_dir / "customers_geo.csv"
 
     def _safe_get(window, key):
         try:
@@ -3178,8 +3227,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             if (el := _safe_get(window, "-MO_NEWCUS-")): el.update(str(m["mo_newcus"]))
             if (el := _safe_get(window, "-MO_SALES-")): el.update(_fmt_money(m["mo_sales"]))
         except Exception:
-            pass
-  # never crash UI on scoreboard refresh
+            pass  # never crash UI on scoreboard refresh
 
     def _start_scoreboard_timer(window, interval_ms=4925):
         """Use Tk after() to refresh scoreboards periodically."""
@@ -3202,10 +3250,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
     # -------- Dialer helper shims --------
     def dialer_cols_info(_headers=None):
-        first_dot = len(HEADER_FIELDS)         # 🙂/😐/☹️ columns start
+        first_dot = len(HEADER_FIELDS)
         last_dot = first_dot + 2
-        first_note = len(HEADER_FIELDS) + 3    # Note1
-        last_note = first_note + 7             # Note8
+        first_note = len(HEADER_FIELDS) + 3
+        last_note = first_note + 7
         return {"first_dot": first_dot, "last_dot": last_dot,
                 "first_note": first_note, "last_note": last_note}
 
@@ -3228,11 +3276,11 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 sheet_obj.set_cell_data(row, base + i, "○")
             idx = {"green": 0, "gray": 1, "red": 2}[outcome]
             c = base + idx
-            sheet_obj.set_cell_data(row, c, "●")
             try:
                 sheet_obj.highlight_cells(row=row, column=c, bg=_DOT_BG[outcome], fg=_DOT_FG[outcome])
             except Exception:
                 pass
+            sheet_obj.set_cell_data(row, c, "●")
             sheet_obj.refresh()
         except Exception:
             pass
@@ -3264,7 +3312,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
     # -------- Warm helpers --------
     def warm_get_col_index_map():
-        """Return quick indices for WARM_V2_FIELDS."""
         idx = {name: i for i, name in enumerate(WARM_V2_FIELDS)}
         return {
             "cost": idx.get("Cost ($)"),
@@ -3274,7 +3321,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         }
 
     def warm_next_empty_call_col(row_values, col_map):
-        """Find next empty Call N cell (1..15)."""
         if not row_values:
             return None
         c1, cN = col_map.get("first_call"), col_map.get("last_call")
@@ -3287,7 +3333,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         return None
 
     def warm_format_cost(val):
-        """Normalize to dollars string '123.45'. Keep empty if blank; pass through if non-numeric."""
         s = (val or "").strip().replace(",", "")
         if not s:
             return ""
@@ -3296,7 +3341,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         except Exception:
             return s
 
-       # ---------- Campaigns UI helpers ----------
+    # ---------- Campaigns UI helpers ----------
     def _camp_toggle_empty_vs_editor(window, show_editor: bool):
         try:
             window["-CAMP_EMPTY_WRAP-"].update(visible=not show_editor)
@@ -3312,7 +3357,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         ]
 
     def _camp_default_settings():
-        # default ON (send to dialer after finishing)
         return {"send_to_dialer_after": "1"}
 
     def camp_read_editor(window):
@@ -3348,15 +3392,12 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             window["-CAMP_SEND_TO_DIALER-"].update(bool(settings.get("send_to_dialer_after") in ("1", True)))
 
     def _camp_refresh_combo_and_table(window):
-        # 3c: load keys robustly and always ensure at least ["default"]
         try:
             keys = list_campaign_keys()
         except Exception:
             keys = []
         if not keys:
             keys = ["default"]
-
-        # Keep the current selection if possible; otherwise pick first
         current = None
         try:
             if "-CAMP_KEY-" in window.AllKeysDict:
@@ -3365,12 +3406,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             current = None
         if not current or current not in keys:
             current = keys[0]
-
-        # Update combo
         if "-CAMP_KEY-" in window.AllKeysDict:
             window["-CAMP_KEY-"].update(values=keys, value=current)
-
-        # Update table
         try:
             rows = [summarize_campaign_for_table(k) for k in keys]
         except Exception:
@@ -3378,7 +3415,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         if "-CAMP_TABLE-" in window.AllKeysDict:
             window["-CAMP_TABLE-"].update(values=rows)
 
-        # Toggle empty/editor section depending on content across all keys
         populated = False
         try:
             for k in keys:
@@ -3417,10 +3453,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             pass
         _camp_toggle_empty_vs_editor(window, True)
 
-
     # ---------- Live-sheet extractors ----------
     def matrix_from_sheet():
-        # Guard: sheet may be None if mounting failed
         if sheet is None or not hasattr(sheet, "get_sheet_data"):
             return []
         raw = sheet.get_sheet_data() or []
@@ -3458,12 +3492,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
     # ----- dialer helpers / state -----
     cols = dialer_cols_info(dial_sheet.headers() if hasattr(dial_sheet, "headers") else None)
-    state = {
-        "row": None,
-        "outcome": None,
-        "note_col_by_row": {},
-        "colored_row": None,
-    }
+    state = {"row": None, "outcome": None, "note_col_by_row": {}, "colored_row": None}
 
     def _row_selected(sheet_obj):
         if sheet_obj is None:
@@ -3578,7 +3607,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             matrix.append(r)
         save_dialer_leads_matrix(matrix)
 
-    # prime the dialer selected row (first non-empty, else 0)
+    # prime the dialer selected row
     try:
         if state["row"] is None:
             r0 = _row_selected(dial_sheet)
@@ -3660,17 +3689,13 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         matrix = warm_matrix_from_sheet_v2()
         save_warm_leads_matrix_v2(matrix)
 
+# ===== CHUNK 5a / 7 — END (continue in 5b) =====
+# ===== CHUNK 5b / 7 — START =====
+# Continuation of main_after_mount from 5a
+
     # ============================================================
     # Customers helpers (save / selection / add order / analytics)
     # ============================================================
-    def _save_customers_grid_to_csv():
-        try:
-            matrix = customers_matrix_from_sheet()
-            save_customers_matrix(matrix)
-            window["-CUST_STATUS-"].update("Saved ✓")
-        except Exception as e:
-            window["-CUST_STATUS-"].update(f"Save error: {e}")
-
     def _customer_selected_row():
         return _row_selected(customer_sheet)
 
@@ -3685,7 +3710,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         layout = [
             [sg.Text(f"Add Order for: {comp_disp}", text_color="#9EE493")],
             [sg.Text("Amount ($):", size=(12,1)), sg.Input(key="-AO_AMOUNT-", size=(20,1))],
-            [sg.Text("Order Date:", size=(12,1)), sg.Input(datetime.now().strftime("%Y-%m-%d"), key="-AO_DATE-", size=(20,1)),
+            [sg.Text("Order Date:", size=(12,1)), sg.Input(_dt.now().strftime("%Y-%m-%d"), key="-AO_DATE-", size=(20,1)),
              sg.Text(" (YYYY-MM-DD or MM/DD/YYYY)", text_color="#AAAAAA")],
             [sg.Push(), sg.Button("Cancel"), sg.Button("Add", button_color=("white","#2E7D32"))]
         ]
@@ -3711,6 +3736,261 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         except Exception:
             pass
 
+    # ---------- Customers autosave + display money formatting ----------
+    def _customers_commit_edits():
+        try:
+            if hasattr(customer_sheet, "end_edit_cell"):
+                customer_sheet.end_edit_cell()
+        except Exception:
+            pass
+        try:
+            if hasattr(customer_sheet, "MT") and hasattr(customer_sheet.MT, "end_edit_cell"):
+                customer_sheet.MT.end_edit_cell()
+        except Exception:
+            pass
+        try:
+            for attr in ("quit_edit", "close_text_editor", "stop_editing"):
+                fn = getattr(getattr(customer_sheet, "MT", customer_sheet), attr, None)
+                if callable(fn):
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _customers_snapshot():
+        try:
+            raw = customer_sheet.get_sheet_data() or []
+        except Exception:
+            raw = []
+        trimmed = []
+        for row in raw:
+            r = (list(row) + [""] * len(CUSTOMER_FIELDS))[:len(CUSTOMER_FIELDS)]
+            trimmed.append([str(x) for x in r])
+        while trimmed and not any((cell or "").strip() for cell in trimmed[-1]):
+            trimmed.pop()
+        return tuple(tuple(r) for r in trimmed)
+
+    def _customers_display_refresh_money():
+        idx_cltv = _cust_idx("CLTV")
+        idx_spd  = _cust_idx("Sales/Day")
+        if idx_cltv is None and idx_spd is None:
+            return
+        try:
+            total = customer_sheet.get_total_rows()
+        except Exception:
+            total = 0
+        editing = None
+        try:
+            editing = getattr(getattr(customer_sheet, "MT", customer_sheet), "text_editor_loc", None)
+        except Exception:
+            editing = None
+
+        for r in range(total):
+            try:
+                row = customer_sheet.get_row_data(r) or []
+            except Exception:
+                row = []
+            for idx in (idx_cltv, idx_spd):
+                if idx is None:
+                    continue
+                try:
+                    if editing and isinstance(editing, (tuple, list)) and len(editing) >= 2 and (r, idx) == tuple(editing):
+                        continue
+                except Exception:
+                    pass
+                s = str(row[idx] if idx < len(row) else "").strip()
+                if not s:
+                    disp = ""
+                else:
+                    try:
+                        v = float(s.replace("$", "").replace(",", ""))
+                        disp = f"${v:,.2f}"
+                    except Exception:
+                        disp = s
+                try:
+                    customer_sheet.set_cell_data(r, idx, disp)
+                except Exception:
+                    pass
+        try:
+            customer_sheet.refresh()
+        except Exception:
+            pass
+
+    _customers_last_hash = {"val": None}
+
+    # ------------ Geocoding helpers (auto-run during autosave) ------------
+    __geo_cache_mem = {}     # in-memory addr -> (lat, lon)
+    __geo_last_time = [0.0]  # simple rate limit
+
+    # NEW: two indexes loaded from customers_geo.csv
+    __geo_by_company = {}    # company_lower -> (lat, lon)
+    __geo_by_addr    = {}    # address_key   -> (lat, lon)
+
+    def _compose_addr_from_row(row_vals):
+        def g(name):
+            i = _cust_idx(name)
+            return (row_vals[i] if i is not None and i < len(row_vals) else "").strip()
+        addr = g("Address")
+        city = g("City")
+        state = g("State")
+        zipc = g("ZIP")
+        if not any([addr, city, state, zipc]):
+            loc = g("Location")
+            if loc:
+                return loc
+            return ""
+        parts = [addr, city, state, zipc]
+        return ", ".join([p for p in parts if p])
+
+    def _geocode_address(addr):
+        if not addr:
+            return None
+        key = addr.lower().strip()
+        if key in __geo_cache_mem:
+            return __geo_cache_mem[key]
+        gap = time.time() - __geo_last_time[0]
+        if gap < 1.1:
+            time.sleep(1.1 - gap)
+        try:
+            import urllib.parse, urllib.request, json as _json
+            url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode({
+                "q": addr, "format": "json", "limit": 1, "addressdetails": 0
+            })
+            req = urllib.request.Request(url, headers={"User-Agent": "DeathStarCRM/1.0 (contact: you@example.com)"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+            __geo_last_time[0] = time.time()
+            if data:
+                lat = float(data[0]["lat"]); lon = float(data[0]["lon"])
+                __geo_cache_mem[key] = (lat, lon)
+                return (lat, lon)
+        except Exception:
+            __geo_last_time[0] = time.time()
+            return None
+        return None
+
+    # --- Sidecar load/save (supports new header with Company) ---
+    def _load_geo_sidecar():
+        global __geo_by_company, __geo_by_addr
+        __geo_by_company, __geo_by_addr = {}, {}
+        if CUSTOMER_GEO_PATH.exists():
+            try:
+                with CUSTOMER_GEO_PATH.open("r", encoding="utf-8", newline="") as f:
+                    rdr = csv.DictReader(f)
+                    for r in rdr:
+                        try:
+                            la = float((r.get("Lat") or "").strip())
+                            lo = float((r.get("Lon") or "").strip())
+                        except Exception:
+                            continue
+                        comp = (r.get("Company") or "").strip().lower()
+                        addrk = (r.get("AddressKey") or "").strip().lower()
+                        if comp:
+                            __geo_by_company[comp] = (la, lo)
+                        if addrk:
+                            __geo_by_addr[addrk] = (la, lo)
+            except Exception:
+                pass
+
+    def _save_geo_sidecar():
+        """Write both company and address indexes back to customers_geo.csv."""
+        try:
+            # merge into rows; prefer company rows, also include address-only rows
+            rows = {}
+            # company keyed rows
+            for comp, (la, lo) in __geo_by_company.items():
+                rows[("c", comp)] = {"Company": comp, "AddressKey": "", "Lat": f"{la:.6f}", "Lon": f"{lo:.6f}"}
+            # address keyed rows (fill if not already present for same coords/company key)
+            for addrk, (la, lo) in __geo_by_addr.items():
+                key = ("a", addrk)
+                if key not in rows:
+                    rows[key] = {"Company": "", "AddressKey": addrk, "Lat": f"{la:.6f}", "Lon": f"{lo:.6f}"}
+            _backup(CUSTOMER_GEO_PATH)
+            with CUSTOMER_GEO_PATH.open("w", encoding="utf-8", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=["Company","AddressKey","Lat","Lon"])
+                w.writeheader()
+                for _, r in rows.items():
+                    w.writerow(r)
+        except Exception:
+            pass
+
+    _load_geo_sidecar()
+
+    def _customers_geocode_row_if_needed(row_vals):
+        """
+        Fill Lat/Lon columns if they exist.
+        1) Try match by Company in customers_geo.csv
+        2) Else try match by AddressKey in customers_geo.csv
+        3) Else geocode and persist (writes company if available)
+        """
+        i_lat = _cust_idx("Lat")
+        i_lon = _cust_idx("Lon")
+        i_company = _cust_idx("Company")
+
+        # Already present?
+        lat_now = (row_vals[i_lat] if i_lat is not None and i_lat < len(row_vals) else "").strip() if i_lat is not None else ""
+        lon_now = (row_vals[i_lon] if i_lon is not None and i_lon < len(row_vals) else "").strip() if i_lon is not None else ""
+        if lat_now and lon_now:
+            return
+
+        company = (row_vals[i_company] if i_company is not None and i_company < len(row_vals) else "").strip()
+        addr = _compose_addr_from_row(row_vals)
+        addr_key = addr.lower().strip() if addr else ""
+
+        # 1) by Company
+        if company:
+            hit = __geo_by_company.get(company.lower())
+            if hit:
+                la, lo = hit
+                if i_lat is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lat, f"{la:.6f}")
+                    except Exception: pass
+                if i_lon is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lon, f"{lo:.6f}")
+                    except Exception: pass
+                return
+
+        # 2) by AddressKey
+        if addr_key:
+            hit = __geo_by_addr.get(addr_key)
+            if hit:
+                la, lo = hit
+                if i_lat is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lat, f"{la:.6f}")
+                    except Exception: pass
+                if i_lon is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lon, f"{lo:.6f}")
+                    except Exception: pass
+                # also attach to company index if company is known
+                if company:
+                    __geo_by_company.setdefault(company.lower(), (la, lo))
+                    _save_geo_sidecar()
+                return
+
+        # 3) Geocode fresh
+        if not addr_key:
+            return
+        got = _geocode_address(addr)
+        if not got:
+            return
+        la, lo = got
+
+        if i_lat is not None:
+            try: customer_sheet.set_cell_data(row_vals_index, i_lat, f"{la:.6f}")
+            except Exception: pass
+        if i_lon is not None:
+            try: customer_sheet.set_cell_data(row_vals_index, i_lon, f"{lo:.6f}")
+            except Exception: pass
+
+        # persist to sidecar (both indexes as available)
+        __geo_by_addr[addr_key] = (la, lo)
+        if company:
+            __geo_by_company[company.lower()] = (la, lo)
+        _save_geo_sidecar()
+
+    # ---------- Orders helpers used by analytics ----------
     def _orders_count_by_company():
         counts = {}
         if ORDERS_PATH.exists():
@@ -3729,7 +4009,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         return counts
 
     def refresh_customer_analytics():
-        # Warm: count non-empty rows; sum samples
         warm_leads = 0
         samples_sum = 0.0
         try:
@@ -3747,7 +4026,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         except Exception:
             pass
 
-        # Customers: totals, new_customers, LTV metrics, reorder
         new_customers = 0
         total_customers = 0
         ltv_vals = []
@@ -3783,15 +4061,13 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             total_customers += 1
             if (rec.get("Customer Since","") or "").strip():
                 new_customers += 1
-            # LTV + total sales
             try:
-                v = float((rec.get("CLTV","") or "").replace(",", "").strip() or "0")
+                v = float((rec.get("CLTV","") or "").replace("$","").replace(",","").strip() or "0")
                 if v > 0:
                     ltv_vals.append(v)
                     total_sales += v
             except Exception:
                 pass
-            # Reorder explicit or inferred (>=2 orders)
             is_yes_now = ((rec.get("Reorder?","") or "").strip().lower() == "yes")
             oc = orders_counts.get(comp, (0, 0.0))[0] if comp else 0
             if oc >= 2 and not is_yes_now:
@@ -3821,11 +4097,9 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         avg_ltv = (sum(ltv_vals) / len(ltv_vals)) if ltv_vals else 0.0
         reorder_rate = (reorder_yes / total_customers * 100.0) if total_customers else 0.0
 
-        # Update UI (keys from CHUNK 2)
         _safe_update("-AN_WARMS-", str(warm_leads))
         _safe_update("-AN_NEWCUS-", str(new_customers))
         _safe_update("-AN_CLOSERATE-", f"{close_rate:.1f}%")
-
         _safe_update("-AN_TOTALSALES-", f"{total_sales:.2f}")
         _safe_update("-AN_CAC-", f"{cac:.2f}")
         _safe_update("-AN_LTV-", f"{avg_ltv:.2f}")
@@ -3833,7 +4107,203 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         _safe_update("-AN_CACLTV-", f"1 : {ratio:.2f}" if cac > 0 else "1 : 0")
         _safe_update("-AN_REORDER-", f"{reorder_rate:.1f}%")
 
-# ===== CHUNK 5 / 7 — END =====
+    # Start periodic autosave for Customers and format money in-grid initially
+    try:
+        _customers_display_refresh_money()
+    except Exception:
+        pass
+    try:
+        _start_customers_autosave(window, interval_ms=4000)
+    except Exception:
+        pass
+
+    # ============================================================
+    # AUTOSAVE: debounce helpers and sheet bindings (DEDUPED & FIXED)
+    # ============================================================
+    class _Debounced:
+        def __init__(self, tkroot):
+            self.tkroot = tkroot
+            self._after = None
+        def call(self, delay_ms, fn):
+            try:
+                if self._after is not None:
+                    self.tkroot.after_cancel(self._after)
+            except Exception:
+                pass
+            try:
+                self._after = self.tkroot.after(delay_ms, fn)
+            except Exception:
+                fn()
+
+    _cust_deb = _Debounced(window.TKroot)
+    _warm_deb = _Debounced(window.TKroot)
+    _dial_deb = _Debounced(window.TKroot)
+
+    def _customers_recompute_and_save():
+        """Normalize money cols, recompute, geocode if needed, then save."""
+        try:
+            idx = {name: i for i, name in enumerate(CUSTOMER_FIELDS)}
+            i_company  = idx.get("Company")
+            i_first    = idx.get("First Order")
+            i_since    = idx.get("Customer Since")
+            i_cltv     = idx.get("CLTV")
+            i_days     = idx.get("Days")
+            i_salesday = idx.get("Sales/Day")
+            i_lat      = idx.get("Lat")
+            i_lon      = idx.get("Lon")
+
+            def _pdate(s):
+                s = (s or "").strip()
+                if not s: return None
+                for fmt in ("%Y-%m-%d","%m/%d/%Y","%m-%d-%Y","%Y/%m/%d","%m/%d","%m-%d"):
+                    try:
+                        d = _dt.strptime(s, fmt)
+                        if fmt in ("%m/%d","%m-%d"):
+                            d = d.replace(year=_dt.now().year)
+                        return d.date()
+                    except Exception:
+                        pass
+                return None
+            def _m2f(x):
+                s = (str(x) if x is not None else "").replace("$","").replace(",","").strip()
+                try: return float(s) if s else 0.0
+                except Exception: return 0.0
+            def _f2m(v):
+                try: return f"{float(v):.2f}"
+                except Exception: return ""
+
+            total = customer_sheet.get_total_rows() if hasattr(customer_sheet,"get_total_rows") else 0
+            for r in range(total):
+                try:
+                    row = customer_sheet.get_row_data(r) or []
+                except Exception:
+                    continue
+
+                # --- GEOCODE if Lat/Lon missing ---
+                global row_vals_index
+                row_vals_index = r
+                try:
+                    lat_now = (row[i_lat] if (i_lat is not None and i_lat < len(row)) else "").strip() if i_lat is not None else ""
+                    lon_now = (row[i_lon] if (i_lon is not None and i_lon < len(row)) else "").strip() if i_lon is not None else ""
+                except Exception:
+                    lat_now = lon_now = ""
+                if not (lat_now and lon_now):
+                    _customers_geocode_row_if_needed(row)
+                    try:
+                        row = customer_sheet.get_row_data(r) or row
+                    except Exception:
+                        pass
+
+                company = (row[i_company] if i_company is not None and i_company < len(row) else "").strip()
+                if not company:
+                    if i_cltv is not None and i_cltv < len(row) and (row[i_cltv] or "").strip() == "0.00":
+                        try: customer_sheet.set_cell_data(r, i_cltv, "")
+                        except Exception: pass
+                    continue
+
+                # Normalize CLTV formatting
+                if i_cltv is not None and i_cltv < len(row):
+                    val = (row[i_cltv] or "").strip()
+                    if val != "":
+                        try:
+                            customer_sheet.set_cell_data(r, i_cltv, _f2m(_m2f(val)))
+                        except Exception:
+                            pass
+
+                first_s  = row[i_first] if i_first is not None and i_first < len(row) else ""
+                since_s  = row[i_since] if i_since is not None and i_since < len(row) else ""
+                first_dt = _pdate(first_s) or _pdate(since_s)
+                if i_days is not None:
+                    try:
+                        if first_dt:
+                            days = max(1, (_dt.now().date() - first_dt).days)
+                            customer_sheet.set_cell_data(r, i_days, str(days))
+                        else:
+                            customer_sheet.set_cell_data(r, i_days, "")
+                    except Exception:
+                        pass
+
+                if i_salesday is not None:
+                    try:
+                        cltv_v = _m2f(customer_sheet.get_cell_data(r, i_cltv)) if i_cltv is not None else 0.0
+                    except Exception:
+                        cltv_v = 0.0
+                    try:
+                        days_v = int(float(customer_sheet.get_cell_data(r, i_days) or "0"))
+                    except Exception:
+                        days_v = 0
+                    try:
+                        if cltv_v > 0 and days_v > 0:
+                            customer_sheet.set_cell_data(r, i_salesday, _f2m(cltv_v / days_v))
+                        else:
+                            customer_sheet.set_cell_data(r, i_salesday, "")
+                    except Exception:
+                        pass
+
+            _save_customers_grid_to_csv()
+            refresh_customer_analytics()
+        except Exception:
+            try:
+                _save_customers_grid_to_csv()
+                refresh_customer_analytics()
+            except Exception:
+                pass
+
+    def _warm_save_debounced():
+        _warm_deb.call(600, _save_warm_grid_to_csv_v2)
+
+    def _dial_save_debounced():
+        _dial_deb.call(600, _save_dialer_grid_to_csv)
+
+    def _cust_save_debounced():
+        _cust_deb.call(600, _customers_recompute_and_save)
+
+    try:
+        if hasattr(customer_sheet, "extra_bindings"):
+            customer_sheet.extra_bindings([
+                ("end_edit_cell", lambda *a, **k: _cust_save_debounced()),
+                ("paste",         lambda *a, **k: _cust_save_debounced()),
+                ("row_add",       lambda *a, **k: _cust_save_debounced()),
+                ("row_delete",    lambda *a, **k: _cust_save_debounced()),
+            ])
+    except Exception:
+        pass
+
+    try:
+        if hasattr(warm_sheet, "extra_bindings"):
+            warm_sheet.extra_bindings([
+                ("end_edit_cell", lambda *a, **k: _warm_save_debounced()),
+                ("paste",         lambda *a, **k: _warm_save_debounced()),
+                ("row_add",       lambda *a, **k: _warm_save_debounced()),
+                ("row_delete",    lambda *a, **k: _warm_save_debounced()),
+            ])
+    except Exception:
+        pass
+
+    try:
+        if hasattr(dial_sheet, "extra_bindings"):
+            dial_sheet.extra_bindings([
+                ("end_edit_cell", lambda *a, **k: _dial_save_debounced()),
+                ("paste",         lambda *a, **k: _dial_save_debounced()),
+                ("row_add",       lambda *a, **k: _dial_save_debounced()),
+                ("row_delete",    lambda *a, **k: _dial_save_debounced()),
+            ])
+    except Exception:
+        pass
+
+    # ---- Start periodic autosave and scoreboard updates ----
+    try:
+        _start_scoreboard_timer(window, interval_ms=5000)
+    except Exception:
+        pass
+
+    try:
+        _customers_recompute_and_save()
+    except Exception:
+        pass
+
+
+# ===== CHUNK 5b / 7 — END (Chunk 6 begins next, not here) =====
 # ===== CHUNK 6 / 7 — START =====
     # ============================================================
     # Prime UI (Email Results stats + analytics + scoreboards)
@@ -3891,9 +4361,12 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
                 # Apply coloring: 0 white, 1 light gray, 2 gray, 3+ dark gray
                 bg = "#FFFFFF"; fg = "#000000"
-                if n == 1:   bg = "#EEEEEE"
-                elif n == 2: bg = "#CFCFCF"
-                elif n >= 3: bg = "#A6A6A6"
+                if n == 1:
+                    bg = "#EEEEEE"
+                elif n == 2:
+                    bg = "#CFCFCF"
+                elif n >= 3:
+                    bg = "#A6A6A6"
                 try:
                     sheet.highlight_cells(row=r, column=emails_col, bg=bg, fg=fg)
                 except Exception:
@@ -3912,6 +4385,285 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         setattr(window, "_refresh_emails_sent_column", _refresh_emails_sent_column_impl)
     except Exception:
         pass
+
+    # ------------------------------------------------------------
+    # MAP helpers (read customers, build Leaflet HTML, open browser)
+    # ------------------------------------------------------------
+    def _first_nonempty(d, keys, default=""):
+        for k in keys:
+            v = d.get(k, "")
+            if (v or "").strip():
+                return v
+        return default
+
+    def _money_fmt(x):
+        s = (str(x) if x is not None else "").replace("$", "").replace(",", "").strip()
+        if not s:
+            return ""
+        try:
+            return f"${float(s):,.2f}"
+        except Exception:
+            return str(x)
+
+    # Compose an "address key" the same way Chunk 5 geocoder does ("Address, City, State, ZIP" or "Location")
+    def _compose_addr_key_from_rowdict(row):
+        addr = (row.get("Address") or "").strip()
+        city = (row.get("City") or "").strip()
+        state = (row.get("State") or "").strip()
+        zipc = (row.get("ZIP") or "").strip()
+        if any([addr, city, state, zipc]):
+            parts = [p for p in (addr, city, state, zipc) if (p or "").strip()]
+            key = ", ".join(parts)
+        else:
+            key = (row.get("Location") or "").strip()
+        return key.lower().strip()
+
+    # NEW: Merge coordinates from customers_geo.csv -> customers.csv (fills blank Lat/Lon)
+    def _merge_sidecar_coords_into_customers():
+        try:
+            GEO_PATH = APP_DIR / "customers_geo.csv"
+        except Exception:
+            GEO_PATH = Path.cwd() / "customers_geo.csv"
+
+        # 1) Load sidecar map: AddressKey -> (lat, lon)
+        sidecar = {}
+        if GEO_PATH.exists():
+            try:
+                with GEO_PATH.open("r", encoding="utf-8", newline="") as f:
+                    rdr = csv.DictReader(f)
+                    # Support both schemas:
+                    #  - AddressKey,Lat,Lon   (from Chunk 5 geocoder)
+                    #  - lat,lon,company/...  (fallback — we won't have the address key then)
+                    fields = [h.lower() for h in (rdr.fieldnames or [])]
+                    if "addresskey".lower() in fields and "lat" in fields and "lon" in fields:
+                        for r in rdr:
+                            k = (r.get("AddressKey") or r.get("addresskey") or "").strip().lower()
+                            la = r.get("Lat") or r.get("lat") or ""
+                            lo = r.get("Lon") or r.get("lon") or ""
+                            try:
+                                la_f = float(la); lo_f = float(lo)
+                                if k:
+                                    sidecar[k] = (la_f, lo_f)
+                            except Exception:
+                                pass
+                    else:
+                        # No AddressKey schema; we can’t safely map rows -> skip merge
+                        sidecar = {}
+            except Exception:
+                sidecar = {}
+
+        if not sidecar:
+            return  # nothing to merge
+
+        # 2) Read customers.csv, fill blanks where we have a sidecar match
+        if not CUSTOMERS_PATH.exists():
+            return
+        try:
+            with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                rdr = csv.DictReader(f)
+                fieldnames = list(rdr.fieldnames or [])
+                rows = list(rdr)
+        except Exception:
+            return
+
+        # Ensure Lat/Lon in header (append if missing)
+        changed = False
+        if "Lat" not in fieldnames:
+            fieldnames.append("Lat"); changed = True
+        if "Lon" not in fieldnames:
+            fieldnames.append("Lon"); changed = True
+
+        for r in rows:
+            lat_now = (r.get("Lat") or "").strip()
+            lon_now = (r.get("Lon") or "").strip()
+            if lat_now and lon_now:
+                continue  # already filled
+
+            key = _compose_addr_key_from_rowdict(r)
+            if not key:
+                continue
+            hit = sidecar.get(key)
+            if not hit:
+                continue
+            la, lo = hit
+            r["Lat"] = f"{la:.6f}"
+            r["Lon"] = f"{lo:.6f}"
+            changed = True
+
+        if not changed:
+            return
+
+        # 3) Write back (with backup), so the map & grid can see coordinates
+        try:
+            _backup(CUSTOMERS_PATH)
+        except Exception:
+            pass
+        try:
+            with CUSTOMERS_PATH.open("w", encoding="utf-8", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                w.writeheader()
+                for r in rows:
+                    w.writerow(r)
+        except Exception:
+            # Best-effort; we won’t crash UI
+            pass
+
+    def _load_customers_for_map():
+        """Return (records, skipped_count). Pulls coords from main CSV (Lat/Lon)."""
+        recs = []
+        skipped = 0
+
+        def _first_nonempty_row(row, keys):
+            for k in keys:
+                v = (row.get(k, "") or "").strip()
+                if v:
+                    return v
+            return ""
+
+        def _money_fmt_local(s):
+            s = (s or "").strip().replace("$", "").replace(",", "")
+            if not s:
+                return ""
+            try:
+                return f"${float(s):.2f}"
+            except Exception:
+                return ""
+
+        try:
+            # Prefer lat/lon columns in customers.csv (after we just merged sidecar coords)
+            if CUSTOMERS_PATH.exists():
+                with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+                    rdr = csv.DictReader(f)
+                    for r in rdr:
+                        lat = _first_nonempty_row(r, ["Lat", "Latitude", "lat", "LAT"])
+                        lon = _first_nonempty_row(r, ["Lon", "Lng", "Longitude", "longitude", "lon", "LON"])
+                        try:
+                            lat_f = float(str(lat)) if lat else None
+                            lon_f = float(str(lon)) if lon else None
+                        except Exception:
+                            lat_f = lon_f = None
+
+                        if lat_f is None or lon_f is None:
+                            skipped += 1
+                            continue
+
+                        company = _first_nonempty_row(r, ["Company"])
+                        cltv    = _money_fmt_local(_first_nonempty_row(r, ["CLTV"]))
+                        spd     = _money_fmt_local(_first_nonempty_row(r, ["Sales/Day", "Sales per Day", "Sales Per Day"]))
+
+                        popup_html = (
+                            f"<b>{company or '(Unnamed)'}</b><br/>"
+                            f"CLTV: {cltv or '$0.00'}<br/>"
+                            f"Sales/Day: {spd or '$0.00'}"
+                        )
+
+                        recs.append({
+                            "lat": lat_f, "lon": lon_f,
+                            "company": company, "cltv": cltv, "spd": spd,
+                            "popup_html": popup_html
+                        })
+
+        except Exception as e:
+            print("map loader error:", e)
+
+        return recs, skipped
+
+    def _write_leaflet_map_html(recs, outfile):
+        """Write a standalone Leaflet HTML file with pins for recs."""
+        # Fallback center: average of coords if possible, else CONUS
+        if recs:
+            try:
+                avg_lat = sum(r["lat"] for r in recs) / len(recs)
+                avg_lon = sum(r["lon"] for r in recs) / len(recs)
+            except Exception:
+                avg_lat, avg_lon = 39.5, -98.35
+        else:
+            avg_lat, avg_lon = 39.5, -98.35
+
+        # Basic Leaflet page
+        markers_js = []
+        for r in recs:
+            popup_safe = r["popup_html"].replace("\\", "\\\\").replace("`", "\\`")
+            markers_js.append(
+                f"L.marker([{r['lat']:.6f}, {r['lon']:.6f}]).addTo(map)"
+                f".bindPopup(`{popup_safe}`);"
+            )
+        markers_blob = "\n        ".join(markers_js)
+
+        html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Customer Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body, #map {{ height: 100%; margin: 0; padding: 0; background:#111; }}
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip {{ background:#222; color:#eee; }}
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    var map = L.map('map').setView([{avg_lat:.6f}, {avg_lon:.6f}], {12 if len(recs)==1 else 5});
+    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }}).addTo(map);
+
+    {markers_blob}
+  </script>
+</body>
+</html>"""
+        try:
+            with open(outfile, "w", encoding="utf-8") as f:
+                f.write(html)
+            return True
+        except Exception:
+            return False
+
+    def _open_customer_map(window):
+        """Build HTML map and open it. Updates -MAP_STATUS- label."""
+        try:
+            out_path = APP_DIR / "customer_map.html"
+        except Exception:
+            out_path = Path.cwd() / "customer_map.html"
+
+        # Ensure customers.csv has coordinates merged from sidecar before building the map
+        try:
+            _merge_sidecar_coords_into_customers()
+        except Exception:
+            pass
+
+        recs, skipped = _load_customers_for_map()
+        if not recs and skipped == 0:
+            try:
+                window["-MAP_STATUS-"].update("No customers yet.")
+            except Exception:
+                pass
+            return
+
+        ok = _write_leaflet_map_html(recs, str(out_path))
+        if not ok:
+            try:
+                window["-MAP_STATUS-"].update("Error writing map HTML.")
+            except Exception:
+                pass
+            return
+
+        # Try to open in default browser
+        try:
+            import webbrowser
+            webbrowser.open(str(out_path))
+        except Exception:
+            pass
+
+        msg = f"Opened map ({len(recs)} pin(s){', skipped ' + str(skipped) + ' without coords' if skipped else ''})."
+        try:
+            window["-MAP_STATUS-"].update(msg)
+        except Exception:
+            pass
 
     def refresh_fire_state():
         matrix = matrix_from_sheet()
@@ -3957,6 +4709,12 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
     # Start scoreboard auto-refresh (every 5 seconds)
     _start_scoreboard_timer(window, interval_ms=5000)
 
+    # NEW: one-time merge of sidecar coords into customers.csv at startup
+    try:
+        _merge_sidecar_coords_into_customers()
+    except Exception:
+        pass
+
     # ============================================================
     # Event loop
     # ============================================================
@@ -3997,10 +4755,12 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 popup_error("Leads sheet not initialized.")
             else:
                 try:
-                    sheet.insert_rows(sheet.get_total_rows(), number_of_rows=10); sheet.refresh()
+                    sheet.insert_rows(sheet.get_total_rows(), number_of_rows=10)
+                    sheet.refresh()
                 except Exception:
                     try:
-                        sheet.insert_rows(sheet.get_total_rows(), amount=10); sheet.refresh()
+                        sheet.insert_rows(sheet.get_total_rows(), amount=10)
+                        sheet.refresh()
                     except Exception as e:
                         popup_error(f"Could not add rows: {e}")
             refresh_fire_state()
@@ -4018,11 +4778,14 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     sels = sheet.get_selected_rows() or []
                     if sels:
                         for r in sorted(sels, reverse=True):
-                            try: sheet.delete_rows(r, 1)
+                            try:
+                                sheet.delete_rows(r, 1)
                             except Exception:
-                                try: sheet.delete_rows(r)
+                                try:
+                                    sheet.delete_rows(r)
                                 except Exception:
-                                    try: sheet.del_rows(r, 1)
+                                    try:
+                                        sheet.del_rows(r, 1)
                                     except Exception:
                                         pass
                         sheet.refresh()
@@ -4067,8 +4830,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             if not key:
                 continue
             _camp_load_into_editor_by_key(window, key)
-            try: window["-CAMP_STATUS-"].update(f"Loaded '{key}'.")
-            except Exception: pass
+            try:
+                window["-CAMP_STATUS-"].update(f"Loaded '{key}'.")
+            except Exception:
+                pass
 
         elif event == "-CAMP_SAVE-":
             key = (values.get("-CAMP_KEY-") or "").strip()
@@ -4111,18 +4876,24 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             key = (values.get("-CAMP_KEY-") or "").strip()
             if key:
                 _camp_load_into_editor_by_key(window, key)
-                try: window["-CAMP_STATUS-"].update("Reloaded ✓")
-                except Exception: pass
+                try:
+                    window["-CAMP_STATUS-"].update("Reloaded ✓")
+                except Exception:
+                    pass
 
         elif event == "-CAMP_RESET-":
             camp_write_editor(window, _camp_blank_steps(), _camp_default_settings())
-            try: window["-CAMP_STATUS-"].update("Reset fields. (Not saved yet)")
-            except Exception: pass
+            try:
+                window["-CAMP_STATUS-"].update("Reset fields. (Not saved yet)")
+            except Exception:
+                pass
 
         elif event == "-CAMP_REFRESH_LIST-":
             _camp_refresh_combo_and_table(window)
-            try: window["-CAMP_STATUS-"].update("Refreshed ✓")
-            except Exception: pass
+            try:
+                window["-CAMP_STATUS-"].update("Refreshed ✓")
+            except Exception:
+                pass
 
         elif event == "-CAMP_TABLE-":
             # Load the selected campaign into the editor
@@ -4137,8 +4908,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         if "-CAMP_KEY-" in window.AllKeysDict:
                             window["-CAMP_KEY-"].update(value=key)
                         _camp_load_into_editor_by_key(window, key)
-                        try: window["-CAMP_STATUS-"].update(f"Loaded '{key}' from list.")
-                        except Exception: pass
+                        try:
+                            window["-CAMP_STATUS-"].update(f"Loaded '{key}' from list.")
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -4148,6 +4921,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-RS_STATUS-"].update("pywin32 missing (Outlook COM). Install pywin32.")
                 continue
             try:
+                # NOTE: correct key name is -LOOKBACK- (not -LOOKBACK_)
                 days = int((values.get("-LOOKBACK-", "") or "60").strip())
             except Exception:
                 days = 60
@@ -4180,8 +4954,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 rows = load_results_rows_sorted()
                 if 0 <= idx < len(rows):
                     set_status(rows[idx]["Ref"], "green")
-                    try: add_warm_from_result(rows[idx], note="Marked Green on Email Results")
-                    except Exception as e: print("Warm add error:", e)
+                    try:
+                        add_warm_from_result(rows[idx], note="Marked Green on Email Results")
+                    except Exception as e:
+                        print("Warm add error:", e)
                 rows = load_results_rows_sorted()
                 data = [[r.get("Ref", ""), r.get("Email", ""), r.get("Company", ""), r.get("Industry", ""),
                          r.get("DateSent", ""), r.get("DateReplied", ""), r.get("Status", ""), r.get("Subject", "")] for r in rows]
@@ -4213,8 +4989,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 rows = load_results_rows_sorted()
                 if 0 <= idx < len(rows):
                     set_status(rows[idx]["Ref"], "red")
-                    try: add_no_interest_from_result(rows[idx], note="Marked Red on Email Results", no_contact_flag=0)
-                    except Exception as e: print("No-interest add error:", e)
+                    try:
+                        add_no_interest_from_result(rows[idx], note="Marked Red on Email Results", no_contact_flag=0)
+                    except Exception as e:
+                        print("No-interest add error:", e)
                 rows = load_results_rows_sorted()
                 data = [[r.get("Ref", ""), r.get("Email", ""), r.get("Company", ""), r.get("Industry", ""),
                          r.get("DateSent", ""), r.get("DateReplied", ""), r.get("Status", ""), r.get("Subject", "")] for r in rows]
@@ -4284,8 +5062,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                                 dial_sheet.refresh()
                             finally:
                                 try:
-                                    if xv: dial_sheet.MT.xview_moveto(xv[0])
-                                    if yv: dial_sheet.MT.yview_moveto(yv[0])
+                                    if xv:
+                                        dial_sheet.MT.xview_moveto(xv[0])
+                                    if yv:
+                                        dial_sheet.MT.yview_moveto(yv[0])
                                 except Exception:
                                     pass
 
@@ -4295,7 +5075,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         elif outcome == "gray":
                             filled = 0
                             row_vals2 = dial_sheet.get_row_data(r) or []
-                            for k in range(cols["first_note"], cols["last_note"]+1):
+                            for k in range(cols["first_note"], cols["last_note"] + 1):
                                 if k < len(row_vals2) and (row_vals2[k] or "").strip():
                                     filled += 1
                             if filled >= 8:
@@ -4343,7 +5123,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
         elif event == "-DIAL_ADD100-":
             try:
-                add = [[""] * len(HEADER_FIELDS) + ["○","○","○"] + ([""]*8) for _ in range(100)]
+                add = [[""] * len(HEADER_FIELDS) + ["○", "○", "○"] + ([""] * 8) for _ in range(100)]
                 try:
                     cur = dial_sheet.get_sheet_data() or []
                 except Exception:
@@ -4390,7 +5170,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             if r is None:
                 window["-WARM_STATUS-"].update("Pick a warm row first.")
                 continue
-            if warm_state["outcome"] not in ("green","gray","red"):
+            if warm_state["outcome"] not in ("green", "gray", "red"):
                 window["-WARM_STATUS-"].update("Choose an outcome first.")
                 continue
             note_text = _warm_note_text()
@@ -4426,14 +5206,14 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             outcome = warm_state["outcome"]
             wmap = {WARM_V2_FIELDS[i]: (row_vals[i] if i < len(WARM_V2_FIELDS) else "") for i in range(len(WARM_V2_FIELDS))}
             base = {
-                "Email": wmap.get("Email",""),
-                "First Name": (wmap.get("Prospect Name","") or "").split(" ")[0] if wmap.get("Prospect Name") else "",
-                "Last Name": " ".join((wmap.get("Prospect Name","") or "").split(" ")[1:]) if wmap.get("Prospect Name") else "",
-                "Company": wmap.get("Company",""),
-                "Industry": wmap.get("Industry",""),
-                "Phone": wmap.get("Phone #",""),
-                "City": (wmap.get("Location","") or "").split(",")[0] if wmap.get("Location") else "",
-                "State": (wmap.get("Location","") or "").split(",")[-1].strip() if wmap.get("Location") and "," in wmap.get("Location") else "",
+                "Email": wmap.get("Email", ""),
+                "First Name": (wmap.get("Prospect Name", "") or "").split(" ")[0] if wmap.get("Prospect Name") else "",
+                "Last Name": " ".join((wmap.get("Prospect Name", "") or "").split(" ")[1:]) if wmap.get("Prospect Name") else "",
+                "Company": wmap.get("Company", ""),
+                "Industry": wmap.get("Industry", ""),
+                "Phone": wmap.get("Phone #", ""),
+                "City": (wmap.get("Location", "") or "").split(",")[0] if wmap.get("Location") else "",
+                "State": (wmap.get("Location", "") or "").split(",")[-1].strip() if wmap.get("Location") and "," in wmap.get("Location") else "",
                 "Website": "",
             }
 
@@ -4462,14 +5242,16 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             try:
                 _save_warm_grid_to_csv_v2()
                 window["-WARM_STATUS-"].update("Saved ✓")
-                try: refresh_customer_analytics()
-                except Exception: pass
+                try:
+                    refresh_customer_analytics()
+                except Exception:
+                    pass
             except Exception as e:
                 window["-WARM_STATUS-"].update(f"Save error: {e}")
 
         elif event == "-WARM_EXPORT-":
             path = sg.popup_get_file("Save warm_leads.csv", save_as=True, default_extension=".csv",
-                                     file_types=(("CSV","*.csv"),), no_window=True)
+                                     file_types=(("CSV", "*.csv"),), no_window=True)
             if path:
                 try:
                     _save_warm_grid_to_csv_v2()
@@ -4487,8 +5269,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 warm_sheet.set_sheet_data(rows)
                 warm_sheet.refresh()
                 window["-WARM_STATUS-"].update("Reloaded ✓")
-                try: refresh_customer_analytics()
-                except Exception: pass
+                try:
+                    refresh_customer_analytics()
+                except Exception:
+                    pass
             except Exception as e:
                 window["-WARM_STATUS-"].update(f"Reload error: {e}")
 
@@ -4502,7 +5286,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 continue
             r_idx = sel_rows[0]
             row = warm_sheet.get_row_data(r_idx) or []
-            warm_row = { WARM_V2_FIELDS[i]: (row[i] if i < len(WARM_V2_FIELDS) else "") for i in range(len(WARM_V2_FIELDS)) }
+            warm_row = {WARM_V2_FIELDS[i]: (row[i] if i < len(WARM_V2_FIELDS) else "") for i in range(len(WARM_V2_FIELDS))}
             yn = sg.popup_yes_no("Mark this Warm Lead as a NEW CUSTOMER?\n\nYou’ll be asked for the Opening Order $ next.")
             if yn != "Yes":
                 window["-WARM_STATUS-"].update("Canceled.")
@@ -4519,21 +5303,23 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 window["-WARM_STATUS-"].update("Invalid amount. Use numbers only, e.g. 1500 or 1500.00")
                 continue
 
-            cust = {h:"" for h in CUSTOMER_FIELDS}
-            cust["Company"] = warm_row.get("Company","")
-            cust["Prospect Name"] = warm_row.get("Prospect Name","")
-            cust["Phone #"] = warm_row.get("Phone #","")
-            cust["Email"] = warm_row.get("Email","")
-            cust["Location"] = warm_row.get("Location","")
-            cust["Industry"] = warm_row.get("Industry","")
-            cust["Google Reviews"] = warm_row.get("Google Reviews","")
-            cust["Rep"] = warm_row.get("Rep","")
-            cust["Samples?"] = warm_row.get("Samples?","")
+            cust = {h: "" for h in CUSTOMER_FIELDS}
+            cust["Company"] = warm_row.get("Company", "")
+            cust["Prospect Name"] = warm_row.get("Prospect Name", "")
+            cust["Phone #"] = warm_row.get("Phone #", "")
+            cust["Email"] = warm_row.get("Email", "")
+            cust["Location"] = warm_row.get("Location", "")
+            cust["Industry"] = warm_row.get("Industry", "")
+            cust["Google Reviews"] = warm_row.get("Google Reviews", "")
+            cust["Rep"] = warm_row.get("Rep", "")
+            cust["Samples?"] = warm_row.get("Samples?", "")
             cust["Timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             if "Opening Order $" in CUSTOMER_FIELDS:
                 cust["Opening Order $"] = amt
             if "Customer Since" in CUSTOMER_FIELDS:
                 cust["Customer Since"] = datetime.now().strftime("%Y-%m-%d")
+
             if "Notes" in CUSTOMER_FIELDS:
                 last_note = ""
                 for i in range(15, 0, -1):
@@ -4543,14 +5329,48 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         break
                 cust["Notes"] = last_note
 
+            # ---- Lat/Lon: pre-fill if possible, else leave blank (autosave/geocoder or sidecar merge will fill) ----
+            if ("Lat" in CUSTOMER_FIELDS) or ("Lon" in CUSTOMER_FIELDS):
+                lat_val, lon_val = "", ""
+
+                # Try to build the best address we can from warm_row
+                addr_parts = []
+                for key in ("Address", "City", "State", "ZIP"):
+                    val = warm_row.get(key, "")
+                    if (val or "").strip():
+                        addr_parts.append(str(val).strip())
+                if addr_parts:
+                    addr = ", ".join(addr_parts)
+                else:
+                    # Fallback to Location field
+                    addr = (cust.get("Location") or "").strip()
+
+                # If the geocode sidecar is available, try to look it up now
+                try:
+                    key = addr.lower().strip()
+                    # __geo_sidecar is defined in Chunk 5 when the app starts
+                    if key and "__geo_sidecar" in globals() and isinstance(globals()["__geo_sidecar"], dict):
+                        hit = globals()["__geo_sidecar"].get(key)
+                        if hit and isinstance(hit, (tuple, list)) and len(hit) >= 2:
+                            lat_val = f"{float(hit[0]):.6f}"
+                            lon_val = f"{float(hit[1]):.6f}"
+                except Exception:
+                    # It's fine to miss; merge helper or autosave will fill later
+                    pass
+
+                if "Lat" in CUSTOMER_FIELDS:
+                    cust["Lat"] = lat_val
+                if "Lon" in CUSTOMER_FIELDS:
+                    cust["Lon"] = lon_val
+
             try:
                 existing = []
                 if CUSTOMERS_PATH.exists():
                     with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
                         rdr = csv.DictReader(f)
                         for r in rdr:
-                            existing.append([r.get(h,"") for h in CUSTOMER_FIELDS])
-                existing.append([cust.get(h,"") for h in CUSTOMER_FIELDS])
+                            existing.append([r.get(h, "") for h in CUSTOMER_FIELDS])
+                existing.append([cust.get(h, "") for h in CUSTOMER_FIELDS])
                 _backup(CUSTOMERS_PATH)
                 _atomic_write_csv(CUSTOMERS_PATH, CUSTOMER_FIELDS, existing)
                 try:
@@ -4566,8 +5386,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 warm_sheet.refresh()
                 _save_warm_grid_to_csv_v2()
                 window["-WARM_STATUS-"].update("Promoted to Customer ✓")
-                try: refresh_customer_analytics()
-                except Exception: pass
+                try:
+                    refresh_customer_analytics()
+                except Exception:
+                    pass
             except Exception as e:
                 window["-WARM_STATUS-"].update(f"Move error (customers): {e}")
 
@@ -4579,8 +5401,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 customer_sheet.set_sheet_data((cur or []) + add)
                 customer_sheet.refresh()
                 _save_customers_grid_to_csv()
-                try: refresh_customer_analytics()
-                except Exception: pass
+                try:
+                    refresh_customer_analytics()
+                except Exception:
+                    pass
             except Exception as e:
                 window["-CUST_STATUS-"].update(f"Add rows error: {e}")
 
@@ -4623,7 +5447,8 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             idx_spd  = _cust_idx("Sales/Day")
 
             def _set_if(idx, val):
-                if idx is None: return
+                if idx is None:
+                    return
                 try:
                     customer_sheet.set_cell_data(r_sel, idx, val)
                 except Exception:
@@ -4650,12 +5475,14 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
         elif event == "-CUST_SAVE-":
             _save_customers_grid_to_csv()
-            try: refresh_customer_analytics()
-            except Exception: pass
+            try:
+                refresh_customer_analytics()
+            except Exception:
+                pass
 
         elif event == "-CUST_EXPORT-":
             path = sg.popup_get_file("Save customers.csv", save_as=True, default_extension=".csv",
-                                     file_types=(("CSV","*.csv"),), no_window=True)
+                                     file_types=(("CSV", "*.csv"),), no_window=True)
             if path:
                 try:
                     _save_customers_grid_to_csv()
@@ -4673,10 +5500,16 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 customer_sheet.set_sheet_data(rows)
                 customer_sheet.refresh()
                 window["-CUST_STATUS-"].update("Reloaded ✓")
-                try: refresh_customer_analytics()
-                except Exception: pass
+                try:
+                    refresh_customer_analytics()
+                except Exception:
+                    pass
             except Exception as e:
                 window["-CUST_STATUS-"].update(f"Reload error: {e}")
+
+        # ---------------- Map tab ----------------
+        elif event == "-OPEN_MAP-":
+            _open_customer_map(window)
 
         # Keep analytics and fire button fresh
         refresh_fire_state()
