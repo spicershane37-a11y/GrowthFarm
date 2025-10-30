@@ -1,5 +1,5 @@
-# ===== CHUNK 1 / 7 — START =====
-# deathstar.py — The Death Star (GUI)
+# ===== CHUNK 1 / 8 — START =====
+# growthfarm.py — GrowthFarm (GUI)
 # v2025-10-02 — Email + Dialer + Warm Leads + Plain Paste RC + Resizable Columns + Keyboard Nav
 # Requires: PySimpleGUI, tksheet; (optional) pywin32 for Outlook
 
@@ -13,6 +13,72 @@ if str(_VENDOR_PSG) not in sys.path:
     sys.path.insert(0, str(_VENDOR_PSG))
 import PySimpleGUI as sg
 # -----------------------------------------
+# ===== DEBUG VIEW SHIMS (for opening the app to take screenshots) =====
+# These no-op helpers prevent NameError when chunks weren't loaded in the
+# exact order. They'll be safely overridden later if real versions exist.
+
+def _noop(*a, **k): 
+    return None
+
+# Only define if not already present later in the file.
+if 'matrix_from_sheet' not in globals():
+    def matrix_from_sheet():
+        try:
+            # Try to read the visible "sheet" if it exists
+            return sheet.get_sheet_data() or []
+        except Exception:
+            return []
+
+if '_start_scoreboard_timer' not in globals():
+    def _start_scoreboard_timer(window, interval_ms=5000):
+        # don't schedule anything; just a no-op so UI can open
+        return None
+
+if '_update_confirm_button' not in globals():
+    def _update_confirm_button():
+        # disable the button if it exists; ignore errors
+        try:
+            window["-DIAL_CONFIRM-"].update(disabled=True)
+        except Exception:
+            pass
+
+if '_warm_update_confirm_button' not in globals():
+    def _warm_update_confirm_button():
+        try:
+            window["-WARM_CONFIRM-"].update(disabled=True)
+        except Exception:
+            pass
+
+if 'refresh_customer_analytics' not in globals():
+    def refresh_customer_analytics():
+        return None
+
+if 'update_scoreboards' not in globals():
+    def update_scoreboards(window):
+        return None
+
+if '_row_selected' not in globals():
+    def _row_selected(sh):
+        try:
+            sels = sh.get_selected_rows() or []
+            if sels:
+                return sels[0]
+        except Exception:
+            pass
+        try:
+            r, _c = sh.get_currently_selected()
+            return r
+        except Exception:
+            return None
+# ======================================================================
+# --- screenshot-safe shim (global) ---
+def _matrix_from_sheet_safe():
+    try:
+        return sheet.get_sheet_data() or []
+    except Exception:
+        return []
+# -------------------------------------
+
 
 set_theme = getattr(sg, "theme", getattr(sg, "ChangeLookAndFeel", None))
 
@@ -31,9 +97,12 @@ if not hasattr(sg, "popup_error"):
 APP_VERSION = "2025-10-02"
 
 # -------------------- App data locations --------------------
-APP_DIR      = Path(os.environ.get("APPDATA", str(Path.home()))) / "DeathStarApp"  # Roaming
+# Renamed app folder to GrowthFarm; kept a gentle migration for the legacy state file below.
+APP_DIR      = Path(os.environ.get("APPDATA", str(Path.home()))) / "GrowthFarm"
 CSV_PATH     = APP_DIR / "kybercrystals.csv"
-STATE_PATH   = APP_DIR / "annihilated_planets.txt"
+# New, neutral state filename; we’ll migrate from the old one if present.
+STATE_PATH   = APP_DIR / "sent_fingerprints.txt"
+LEGACY_STATE_PATH = APP_DIR / "annihilated_planets.txt"   # back-compat read/migrate
 TPL_PATH     = APP_DIR / "templates.ini"
 RESULTS_PATH = APP_DIR / "results.csv"
 
@@ -47,9 +116,238 @@ NO_INTEREST_PATH    = APP_DIR / "no_interest.csv"
 CUSTOMERS_PATH      = APP_DIR / "customers.csv"
 ORDERS_PATH         = APP_DIR / "orders.csv"
 
+# --- safety stubs (visible to main_after_mount via globals) ---
+def _update_confirm_button():
+    try:
+        window["-DIAL_CONFIRM-"].update(disabled=True)
+    except Exception:
+        pass
+
+def _warm_update_confirm_button():
+    try:
+        window["-WARM_CONFIRM-"].update(disabled=True)
+    except Exception:
+        pass
+# ==== scoreboard shims (safe no-op, overridden if real ones exist later) ====
+
+# If a refresh function doesn't exist yet, keep it harmless.
+try:
+    _scoreboards_refresh
+except NameError:
+    def _scoreboards_refresh(_win):
+        pass
+
+# Provide the underscored helper the code is calling.
+try:
+    _start_scoreboard_timer
+except NameError:
+    def _start_scoreboard_timer(window, interval_ms=5000):
+        try:
+            def _tick():
+                try:
+                    _scoreboards_refresh(window)
+                finally:
+                    try:
+                        window.TKroot.after(interval_ms, _tick)
+                    except Exception:
+                        pass
+            # kick once
+            try:
+                _scoreboards_refresh(window)
+            except Exception:
+                pass
+            window.TKroot.after(interval_ms, _tick)
+        except Exception:
+            pass
+
+# Some places may call the non-underscored alias — point it to the same function.
+def start_scoreboard_timer(window, interval_ms=5000):
+    return _start_scoreboard_timer(window, interval_ms)
+# ==== end shims ====
+# ==== UI helper shims (safe no-ops to get the app opening) ====
+
+# Fallback: read visible grid to a matrix (trim to headers if available)
+try:
+    matrix_from_sheet
+except NameError:
+    def matrix_from_sheet():
+        try:
+            raw = sheet.get_sheet_data() or []
+            try:
+                hlen = len(HEADER_FIELDS)
+                out = []
+                for r in raw:
+                    row = (list(r) + [""] * hlen)[:hlen]
+                    out.append(row)
+                while out and not any((c or "").strip() for c in out[-1]):
+                    out.pop()
+                return out
+            except Exception:
+                return raw
+        except Exception:
+            return []
+
+# Selection helpers
+try:
+    _row_selected
+except NameError:
+    def _row_selected(sheet_obj):
+        if sheet_obj is None:
+            return None
+        try:
+            sel = sheet_obj.get_selected_rows() or []
+            if sel:
+                return sel[0]
+        except Exception:F
+            pass
+        try:
+            r, _c = sheet_obj.get_currently_selected()
+            if isinstance(r, int) and r >= 0:
+                return r
+        except Exception:
+            pass
+        # neutral default (won't crash)
+        return None
+
+try:
+    _set_working_row
+except NameError:
+    def _set_working_row(_r):
+        # UI convenience in the original; safe to no-op
+        pass
+
+# Dialer helpers the loop references
+try:
+    dialer_next_empty_note_col
+except NameError:
+    def dialer_next_empty_note_col(sheet_obj, row, cols):
+        try:
+            r = sheet_obj.get_row_data(row) or []
+        except Exception:
+            return None
+        first_note = cols.get("first_note", len(HEADER_FIELDS)+3)
+        last_note  = cols.get("last_note",  first_note + 7)
+        for c in range(first_note, last_note + 1):
+            if c >= len(r) or not (r[c] or "").strip():
+                return c
+        return None
+
+try:
+    dialer_clear_dot_highlights
+except NameError:
+    def dialer_clear_dot_highlights(_sheet_obj, _row, _cols):
+        pass
+
+try:
+    dialer_colorize_outcome
+except NameError:
+    def dialer_colorize_outcome(sheet_obj, row, outcome, cols=None):
+        # Minimal: set the dot characters; colors are optional
+        try:
+            if cols is None:
+                first_dot = len(HEADER_FIELDS)
+            else:
+                first_dot = cols.get("first_dot", len(HEADER_FIELDS))
+            for i in range(3):
+                sheet_obj.set_cell_data(row, first_dot + i, "○")
+            idx = {"green": 0, "gray": 1, "red": 2}.get(outcome, 1)
+            sheet_obj.set_cell_data(row, first_dot + idx, "●")
+            try:
+                sheet_obj.refresh()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+# Warm-tab helpers
+try:
+    _warm_selected_row
+except NameError:
+    def _warm_selected_row():
+        try:
+            return _row_selected(warm_sheet)
+        except Exception:
+            return None
+
+try:
+    _warm_set_row
+except NameError:
+    def _warm_set_row(_r):
+        pass
+
+# Buttons enable/disable shims
+try:
+    _update_confirm_button
+except NameError:
+    def _update_confirm_button():
+        pass
+
+try:
+    _warm_update_confirm_button
+except NameError:
+    def _warm_update_confirm_button():
+        pass
+
+# Customers autosave shim
+try:
+    _start_customers_autosave
+except NameError:
+    def _start_customers_autosave(_window, interval_ms=4000):
+        pass
+
+# Emails-sent column refresher sometimes attached on window
+try:
+    _temp = window  # only if window exists at import time
+    if not hasattr(window, "_refresh_emails_sent_column"):
+        setattr(window, "_refresh_emails_sent_column", lambda: None)
+except Exception:
+    # define a global placeholder the code may call later as window._refresh_emails_sent_column()
+    def _refresh_emails_sent_column_impl():
+        pass
+# ==== end UI helper shims ====
+
+# Handy popup shim (some paths call this)
+try:
+    popup_error
+except NameError:
+    def popup_error(msg):
+        try:
+            import PySimpleGUI as sg
+            sg.popup_error(str(msg), keep_on_top=True)
+        except Exception:
+            print("[ERROR]", msg)
+
+# --- Global-safe shim so inner functions never capture an unbound local ---
+try:
+    matrix_from_sheet  # if already defined globally, leave it alone
+except NameError:
+    def matrix_from_sheet():
+        try:
+            raw = sheet.get_sheet_data() or []
+        except Exception:
+            return []
+        try:
+            hlen = len(HEADER_FIELDS)
+        except Exception:
+            # no headers? just return what we got
+            return raw
+        out = []
+        for r in raw:
+            row = (list(r) + [""] * hlen)[:hlen]
+            out.append(row)
+        while out and not any((c or "").strip() for c in out[-1]):
+            out.pop()
+        return out
+
+
+
 # -------------------- Outlook settings ----------------------
-DEATHSTAR_SUBFOLDER = "Order 66"   # Drafts subfolder
-TARGET_MAILBOX_HINT = ""           # Optional: part of SMTP/display name to target a specific account
+# Renamed drafts subfolder; provide a back-compat alias so other chunks keep working.
+OUTLOOK_DRAFTS_SUBFOLDER = "GrowthFarm"   # Drafts subfolder (new)
+TARGET_MAILBOX_HINT = ""                  # Optional: part of SMTP/display name to target a specific account
+
+# Back-compat alias for older chunks that reference DEATHSTAR_SUBFOLDER
+DEATHSTAR_SUBFOLDER = OUTLOOK_DRAFTS_SUBFOLDER
 
 # -------------------- Columns / headers ---------------------
 HEADER_FIELDS = [
@@ -183,8 +481,19 @@ def ensure_app_files():
     if not CSV_PATH.exists():
         with CSV_PATH.open("w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(HEADER_FIELDS)
+
+    # Migrate legacy state filename if present
+    try:
+        if not STATE_PATH.exists() and LEGACY_STATE_PATH.exists():
+            # copy over content; keep legacy file intact (safer than rename)
+            with LEGACY_STATE_PATH.open("r", encoding="utf-8") as s, STATE_PATH.open("w", encoding="utf-8") as d:
+                d.write(s.read())
+    except Exception:
+        pass
+
     if not STATE_PATH.exists():
         STATE_PATH.touch()
+
     if not TPL_PATH.exists():
         save_templates_ini(DEFAULT_TEMPLATES, DEFAULT_SUBJECTS, DEFAULT_MAP)
     if not RESULTS_PATH.exists():
@@ -918,8 +1227,8 @@ def _enable_keyboard_nav(sheet_obj):
         except Exception:
             pass
 
-# ===== CHUNK 1 / 7 — END =====
-# ===== CHUNK 2 / 7 — START =====
+# ===== CHUNK 1 / 8 — END =====
+# ===== CHUNK 2 / 8 — START =====
 # ============================================================
 # GUI
 # ============================================================
@@ -1887,8 +2196,8 @@ def main():
             pass
     print(">>> EXITING main()")
 
-# ===== CHUNK 2 / 7 — END =====
-# ===== CHUNK 3 / 7 — START =====
+# ===== CHUNK 2 / 8 — END =====
+# ===== CHUNK 3 / 8 — START =====
 # ============================================================
 # CSV I/O
 # ============================================================
@@ -1996,18 +2305,24 @@ def save_warm_leads_matrix_v2(matrix):
 
 DIALER_LEADS_PATH = APP_DIR / "dialer_leads.csv"
 
+# Unified large emoji set (write with these, read legacy too)
+EMOJI_GREEN = "🙂"
+EMOJI_GRAY  = "😐"
+EMOJI_RED   = "🙁"   # standard going forward
+EMOJI_RED_LEGACY = "☹️"  # legacy header seen in older files
+
 
 def ensure_dialer_leads_file():
     """Ensure the dialer grid CSV exists with the expected headers."""
     if not DIALER_LEADS_PATH.exists():
         with DIALER_LEADS_PATH.open("w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
-            hdr = HEADER_FIELDS + ["🙂","😐","🙁"] + [f"Note{i}" for i in range(1,9)]
+            hdr = HEADER_FIELDS + [EMOJI_GREEN, EMOJI_GRAY, EMOJI_RED] + [f"Note{i}" for i in range(1,9)]
             w.writerow(hdr)
 
 
 def load_dialer_leads_matrix():
-    """Load dialer leads rows. If legacy header is detected, adapt best-effort."""
+    """Load dialer leads rows. Accept legacy ☹️ header; normalize to 🙁 in memory."""
     ensure_dialer_leads_file()
     rows = []
     with DIALER_LEADS_PATH.open("r", encoding="utf-8", newline="") as f:
@@ -2015,13 +2330,23 @@ def load_dialer_leads_matrix():
         raw = list(rdr)
     if not raw:
         return rows
+
     hdr = raw[0]
-    expected = HEADER_FIELDS + ["🙂","😐","🙁"] + [f"Note{i}" for i in range(1,9)]
-    idx_map = [hdr.index(h) if h in hdr else None for h in expected]
+
+    # Build an index map that tolerates the legacy header.
+    expected = HEADER_FIELDS + [EMOJI_GREEN, EMOJI_GRAY, EMOJI_RED] + [f"Note{i}" for i in range(1,9)]
+    # If the modern red header isn't present but the legacy one is, treat it as the red column.
+    header_lookup = {h: (hdr.index(h) if h in hdr else None) for h in expected}
+    if header_lookup[EMOJI_RED] is None and EMOJI_RED_LEGACY in hdr:
+        header_lookup[EMOJI_RED] = hdr.index(EMOJI_RED_LEGACY)
+
+    idx_map = [header_lookup[h] for h in expected]
+
     for row in raw[1:]:
         out = []
         for i, idx in enumerate(idx_map):
             if idx is None:
+                # Missing: fill outcome dots with empty-circle; notes blank
                 if len(HEADER_FIELDS) <= i < len(HEADER_FIELDS)+3:
                     out.append("○")
                 else:
@@ -2033,9 +2358,9 @@ def load_dialer_leads_matrix():
 
 
 def save_dialer_leads_matrix(matrix):
-    """Save dialer grid with its own headers."""
+    """Save dialer grid with its own headers (always using the unified large emoji set)."""
     _backup(DIALER_LEADS_PATH)
-    headers = HEADER_FIELDS + ["🙂","😐","☹️"] + [f"Note{i}" for i in range(1,9)]
+    headers = HEADER_FIELDS + [EMOJI_GREEN, EMOJI_GRAY, EMOJI_RED] + [f"Note{i}" for i in range(1,9)]
     _atomic_write_csv(DIALER_LEADS_PATH, headers, matrix)
 
 
@@ -2270,7 +2595,6 @@ def append_order_row(company: str, order_date: str, amount: str):
     # Recompute stats and update customers.csv
     stats = compute_customer_order_stats(company)
     # Prepare updates (align to CUSTOMER_FIELDS: "First Order", "Last Order")
-        # Prepare updates
     updates = {}
     if stats["first_order_date"]:
         updates["First Order"] = stats["first_order_date"].strftime("%Y-%m-%d")   # <-- was First Order Date
@@ -2721,8 +3045,8 @@ def outlook_sync_results(lookback_days=60):
         pass
     return len(sent_map), len(reply_map)
 
-# ===== CHUNK 3 / 7 — END =====
-# ===== CHUNK 4 / 7 — START =====
+# ===== CHUNK 3 / 8 — END =====
+# ===== CHUNK 4 / 8 — START =====
 # ============================================================
 # Shared helpers (no hard dependency on live tksheet objects)
 # ============================================================
@@ -3077,8 +3401,8 @@ def process_campaign_queue():
     if changed:
         _write_campaign_rows(rows)
 
-# ===== CHUNK 4 / 7 — END =====
-# ===== CHUNK 5a / 7 — START =====
+# ===== CHUNK 4 / 8 — END =====
+# ===== CHUNK 5 / 8 — START =====
 # ============================================================
 # main_after_mount helpers (Part A)
 # - Scoreboard helpers
@@ -3091,7 +3415,75 @@ def process_campaign_queue():
 # ============================================================
 
 def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templates, subjects, mapping, warm_sheet, customer_sheet):
+    # --- Local matrix_from_sheet shim to avoid free-var errors everywhere ---
+    _global_mfs = globals().get("matrix_from_sheet")
+
+    def matrix_from_sheet():
+        """
+        Always return the leads grid as a matrix.
+        Prefer a global implementation if present; otherwise read from `sheet`.
+        This local binding prevents 'free variable not associated' NameErrors.
+        """
+        if callable(_global_mfs):
+            try:
+                return _global_mfs()
+            except Exception:
+                pass
+        try:
+            return sheet.get_sheet_data() or []
+        except Exception:
+            return []
+
     # ---------- Scoreboard helpers ----------
+    # --- safety shims so early calls don't crash; later real defs (if any) can overwrite ---
+    def _update_confirm_button():
+        try:
+            window["-DIAL_CONFIRM-"].update(disabled=True)
+        except Exception:
+            pass
+
+    # NEW: warm-tab confirm button shim
+    def _warm_update_confirm_button():
+        try:
+            window["-WARM_CONFIRM-"].update(disabled=True)
+        except Exception:
+            pass
+
+    # NEW: safe scoreboard timer shim (no-op if TK not ready)
+    def _start_scoreboard_timer(win, interval_ms=5000):
+        def _tick():
+            try:
+                # If you have a real refresh function, call it here
+                if hasattr(win, "_scoreboards_refresh"):
+                    win._scoreboards_refresh()
+            finally:
+                try:
+                    win.TKroot.after(interval_ms, _tick)
+                except Exception:
+                    pass
+        try:
+            _tick()
+        except Exception:
+            pass
+
+    # NEW: row selection shim used all over
+    def _row_selected(sheet_obj):
+        if sheet_obj is None:
+            return None
+        try:
+            sel = sheet_obj.get_selected_rows() or []
+            if sel:
+                return sel[0]
+        except Exception:
+            pass
+        try:
+            r, _ = sheet_obj.get_currently_selected()
+            if isinstance(r, int) and r >= 0:
+                return r
+        except Exception:
+            pass
+        return None
+
     from datetime import datetime as _dt
     import time, csv, os, json
     from pathlib import Path
@@ -3689,9 +4081,9 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         matrix = warm_matrix_from_sheet_v2()
         save_warm_leads_matrix_v2(matrix)
 
-# ===== CHUNK 5a / 7 — END (continue in 5b) =====
-# ===== CHUNK 5b / 7 — START =====
-# Continuation of main_after_mount from 5a
+# ===== CHUNK 5 / 8 — END =====
+# ===== CHUNK 6 / 8 — START =====
+
 
     # ============================================================
     # Customers helpers (save / selection / add order / analytics)
@@ -3821,8 +4213,12 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
     _customers_last_hash = {"val": None}
 
     # ------------ Geocoding helpers (auto-run during autosave) ------------
-    __geo_cache_mem = {}
-    __geo_last_time = [0.0]
+    __geo_cache_mem = {}     # in-memory addr -> (lat, lon)
+    __geo_last_time = [0.0]  # simple rate limit
+
+    # NEW: two indexes loaded from customers_geo.csv
+    __geo_by_company = {}    # company_lower -> (lat, lon)
+    __geo_by_addr    = {}    # address_key   -> (lat, lon)
 
     def _compose_addr_from_row(row_vals):
         def g(name):
@@ -3867,72 +4263,124 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             return None
         return None
 
+    # --- Sidecar load/save (supports new header with Company) ---
     def _load_geo_sidecar():
-        mp = {}
+        global __geo_by_company, __geo_by_addr
+        __geo_by_company, __geo_by_addr = {}, {}
         if CUSTOMER_GEO_PATH.exists():
             try:
                 with CUSTOMER_GEO_PATH.open("r", encoding="utf-8", newline="") as f:
                     rdr = csv.DictReader(f)
                     for r in rdr:
-                        k = (r.get("AddressKey","") or "").strip().lower()
-                        if k and (r.get("Lat") and r.get("Lon")):
-                            try:
-                                mp[k] = (float(r["Lat"]), float(r["Lon"]))
-                            except Exception:
-                                pass
+                        try:
+                            la = float((r.get("Lat") or "").strip())
+                            lo = float((r.get("Lon") or "").strip())
+                        except Exception:
+                            continue
+                        comp = (r.get("Company") or "").strip().lower()
+                        addrk = (r.get("AddressKey") or "").strip().lower()
+                        if comp:
+                            __geo_by_company[comp] = (la, lo)
+                        if addrk:
+                            __geo_by_addr[addrk] = (la, lo)
             except Exception:
                 pass
-        return mp
 
-    def _save_geo_sidecar(mapping):
-        rows = []
-        for k, (la, lo) in mapping.items():
-            rows.append({"AddressKey": k, "Lat": f"{la:.6f}", "Lon": f"{lo:.6f}"})
+    def _save_geo_sidecar():
+        """Write both company and address indexes back to customers_geo.csv."""
         try:
+            # merge into rows; prefer company rows, also include address-only rows
+            rows = {}
+            # company keyed rows
+            for comp, (la, lo) in __geo_by_company.items():
+                rows[("c", comp)] = {"Company": comp, "AddressKey": "", "Lat": f"{la:.6f}", "Lon": f"{lo:.6f}"}
+            # address keyed rows (fill if not already present for same coords/company key)
+            for addrk, (la, lo) in __geo_by_addr.items():
+                key = ("a", addrk)
+                if key not in rows:
+                    rows[key] = {"Company": "", "AddressKey": addrk, "Lat": f"{la:.6f}", "Lon": f"{lo:.6f}"}
             _backup(CUSTOMER_GEO_PATH)
-        except Exception:
-            pass
-        try:
             with CUSTOMER_GEO_PATH.open("w", encoding="utf-8", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=["AddressKey","Lat","Lon"])
+                w = csv.DictWriter(f, fieldnames=["Company","AddressKey","Lat","Lon"])
                 w.writeheader()
-                for r in rows:
+                for _, r in rows.items():
                     w.writerow(r)
         except Exception:
             pass
 
-    __geo_sidecar = _load_geo_sidecar()
+    _load_geo_sidecar()
 
     def _customers_geocode_row_if_needed(row_vals):
+        """
+        Fill Lat/Lon columns if they exist.
+        1) Try match by Company in customers_geo.csv
+        2) Else try match by AddressKey in customers_geo.csv
+        3) Else geocode and persist (writes company if available)
+        """
         i_lat = _cust_idx("Lat")
         i_lon = _cust_idx("Lon")
+        i_company = _cust_idx("Company")
+
+        # Already present?
         lat_now = (row_vals[i_lat] if i_lat is not None and i_lat < len(row_vals) else "").strip() if i_lat is not None else ""
         lon_now = (row_vals[i_lon] if i_lon is not None and i_lon < len(row_vals) else "").strip() if i_lon is not None else ""
-        need_coords = not (lat_now and lon_now)
-        if not need_coords:
+        if lat_now and lon_now:
             return
+
+        company = (row_vals[i_company] if i_company is not None and i_company < len(row_vals) else "").strip()
         addr = _compose_addr_from_row(row_vals)
-        if not addr:
-            return
-        key = addr.lower().strip()
-        if key in __geo_sidecar:
-            la, lo = __geo_sidecar[key]
-        else:
-            got = _geocode_address(addr)
-            if not got:
+        addr_key = addr.lower().strip() if addr else ""
+
+        # 1) by Company
+        if company:
+            hit = __geo_by_company.get(company.lower())
+            if hit:
+                la, lo = hit
+                if i_lat is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lat, f"{la:.6f}")
+                    except Exception: pass
+                if i_lon is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lon, f"{lo:.6f}")
+                    except Exception: pass
                 return
-            la, lo = got
-            __geo_sidecar[key] = (la, lo)
-            _save_geo_sidecar(__geo_sidecar)
-        if i_lat is not None:
-            try: customer_sheet.set_cell_data(customer_sheet.get_currently_selected()[0] if False else 0, 0, "")
-            except Exception: pass
+
+        # 2) by AddressKey
+        if addr_key:
+            hit = __geo_by_addr.get(addr_key)
+            if hit:
+                la, lo = hit
+                if i_lat is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lat, f"{la:.6f}")
+                    except Exception: pass
+                if i_lon is not None:
+                    try: customer_sheet.set_cell_data(row_vals_index, i_lon, f"{lo:.6f}")
+                    except Exception: pass
+                # also attach to company index if company is known
+                if company:
+                    __geo_by_company.setdefault(company.lower(), (la, lo))
+                    _save_geo_sidecar()
+                return
+
+        # 3) Geocode fresh
+        if not addr_key:
+            return
+        got = _geocode_address(addr)
+        if not got:
+            return
+        la, lo = got
+
         if i_lat is not None:
             try: customer_sheet.set_cell_data(row_vals_index, i_lat, f"{la:.6f}")
             except Exception: pass
         if i_lon is not None:
             try: customer_sheet.set_cell_data(row_vals_index, i_lon, f"{lo:.6f}")
             except Exception: pass
+
+        # persist to sidecar (both indexes as available)
+        __geo_by_addr[addr_key] = (la, lo)
+        if company:
+            __geo_by_company[company.lower()] = (la, lo)
+        _save_geo_sidecar()
 
     # ---------- Orders helpers used by analytics ----------
     def _orders_count_by_company():
@@ -4006,7 +4454,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             if (rec.get("Customer Since","") or "").strip():
                 new_customers += 1
             try:
-                v = float((rec.get("CLTV","") or "").replace("$","").replace(",","" ).strip() or "0")
+                v = float((rec.get("CLTV","") or "").replace("$","").replace(",","").strip() or "0")
                 if v > 0:
                     ltv_vals.append(v)
                     total_sales += v
@@ -4109,7 +4557,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         pass
                 return None
             def _m2f(x):
-                s = (str(x) if x is not None else "").replace("$","").replace(",","" ).strip()
+                s = (str(x) if x is not None else "").replace("$","").replace(",","").strip()
                 try: return float(s) if s else 0.0
                 except Exception: return 0.0
             def _f2m(v):
@@ -4123,6 +4571,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                 except Exception:
                     continue
 
+                # --- GEOCODE if Lat/Lon missing ---
                 global row_vals_index
                 row_vals_index = r
                 try:
@@ -4144,6 +4593,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         except Exception: pass
                     continue
 
+                # Normalize CLTV formatting
                 if i_cltv is not None and i_cltv < len(row):
                     val = (row[i_cltv] or "").strip()
                     if val != "":
@@ -4244,11 +4694,46 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
     except Exception:
         pass
 
-# ===== CHUNK 5b / 7 — END (Chunk 6 begins next, not here) =====
-# ===== CHUNK 6 / 7 — START =====
-    # ============================================================
-    # Prime UI (Email Results stats + analytics + scoreboards)
-    # ============================================================
+
+# ===== CHUNK 6 / 8 — END =====
+# ===== CHUNK 7a / 8 — START =====
+# ============================================================
+# Prime UI (Email Results stats + analytics + scoreboards)
+# ============================================================
+
+# NOTE: This chunk now DEFINES and STARTS the function `main_after_mount(...)`.
+# Chunk 2 calls this function after creating `window`, `sheet`, etc.
+# Chunk 7b should CONTINUE inside this same function (same indentation)
+# with the event loop and all remaining handlers.
+
+def main_after_mount(
+    *,
+    window,
+    sheet,
+    dial_sheet,
+    leads_host,
+    dialer_host,
+    templates,
+    subjects,
+    mapping,
+    warm_sheet,
+    customer_sheet,
+):
+    """Post-mount wiring for scoreboards, analytics, map helpers, and timers.
+    This function is called from Chunk 2 AFTER the window and grids are mounted.
+    """
+
+    # --- Safety shim: ensure matrix_from_sheet exists before we call it ---
+    if "matrix_from_sheet" not in globals():
+        def matrix_from_sheet():
+            """
+            Fallback: read the visible leads grid (sheet) into a matrix.
+            This is a no-op safe shim if the real matrix_from_sheet (Chunk 5) isn't loaded yet.
+            """
+            try:
+                return sheet.get_sheet_data() or []
+            except Exception:
+                return []
 
     # Helper: recompute & recolor the "Emails Sent" display column on the Leads grid
     def _emails_sent_for(addr: str) -> int:
@@ -4273,19 +4758,15 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         try:
             if sheet is None:
                 return
-            # Last column is the extra "Emails Sent" appended to HEADER_FIELDS
             try:
                 total_rows = sheet.get_total_rows()
             except Exception:
                 total_rows = 0
-
-            # Figure out where Email column lives in the data portion
             try:
                 email_idx = HEADER_FIELDS.index("Email")
             except Exception:
                 email_idx = 0
-
-            emails_col = len(HEADER_FIELDS)  # display col index for "Emails Sent"
+            emails_col = len(HEADER_FIELDS)
             for r in range(max(0, total_rows)):
                 try:
                     row_vals = sheet.get_row_data(r) or []
@@ -4293,14 +4774,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     row_vals = []
                 addr = row_vals[email_idx] if email_idx < len(row_vals) else ""
                 n = _emails_sent_for(addr)
-
-                # Update cell text
                 try:
                     sheet.set_cell_data(r, emails_col, str(n))
                 except Exception:
                     pass
-
-                # Apply coloring: 0 white, 1 light gray, 2 gray, 3+ dark gray
                 bg = "#FFFFFF"; fg = "#000000"
                 if n == 1:
                     bg = "#EEEEEE"
@@ -4312,7 +4789,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                     sheet.highlight_cells(row=r, column=emails_col, bg=bg, fg=fg)
                 except Exception:
                     pass
-
             try:
                 sheet.refresh()
             except Exception:
@@ -4346,7 +4822,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         except Exception:
             return str(x)
 
-    # Compose an "address key" the same way Chunk 5 geocoder does ("Address, City, State, ZIP" or "Location")
+    # Compose an "address key" the same way Chunk 6 geocoder does ("Address, City, State, ZIP" or "Location")
     def _compose_addr_key_from_rowdict(row):
         addr = (row.get("Address") or "").strip()
         city = (row.get("City") or "").strip()
@@ -4359,100 +4835,45 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             key = (row.get("Location") or "").strip()
         return key.lower().strip()
 
-    # NEW: Merge coordinates from customers_geo.csv -> customers.csv (fills blank Lat/Lon)
-    def _merge_sidecar_coords_into_customers():
+    # Read sidecar into two maps (fast, no geocoding here): company->(lat,lon) and addresskey->(lat,lon)
+    def _read_geo_sidecar_maps():
         try:
             GEO_PATH = APP_DIR / "customers_geo.csv"
         except Exception:
-            GEO_PATH = Path.cwd() / "customers_geo.csv"
-
-        # 1) Load sidecar map: AddressKey -> (lat, lon)
-        sidecar = {}
-        if GEO_PATH.exists():
-            try:
-                with GEO_PATH.open("r", encoding="utf-8", newline="") as f:
-                    rdr = csv.DictReader(f)
-                    # Support both schemas:
-                    #  - AddressKey,Lat,Lon   (from Chunk 5 geocoder)
-                    #  - lat,lon,company/...  (fallback — we won't have the address key then)
-                    fields = [h.lower() for h in (rdr.fieldnames or [])]
-                    if "addresskey".lower() in fields and "lat" in fields and "lon" in fields:
-                        for r in rdr:
-                            k = (r.get("AddressKey") or r.get("addresskey") or "").strip().lower()
-                            la = r.get("Lat") or r.get("lat") or ""
-                            lo = r.get("Lon") or r.get("lon") or ""
-                            try:
-                                la_f = float(la); lo_f = float(lo)
-                                if k:
-                                    sidecar[k] = (la_f, lo_f)
-                            except Exception:
-                                pass
-                    else:
-                        # No AddressKey schema; we can’t safely map rows -> skip merge
-                        sidecar = {}
-            except Exception:
-                sidecar = {}
-
-        if not sidecar:
-            return  # nothing to merge
-
-        # 2) Read customers.csv, fill blanks where we have a sidecar match
-        if not CUSTOMERS_PATH.exists():
-            return
+            from pathlib import Path as _P
+            GEO_PATH = _P.cwd() / "customers_geo.csv"
+        by_company, by_addr = {}, {}
+        if not GEO_PATH.exists():
+            return by_company, by_addr
         try:
-            with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
+            with GEO_PATH.open("r", encoding="utf-8", newline="") as f:
                 rdr = csv.DictReader(f)
-                fieldnames = list(rdr.fieldnames or [])
-                rows = list(rdr)
-        except Exception:
-            return
-
-        # Ensure Lat/Lon in header (append if missing)
-        changed = False
-        if "Lat" not in fieldnames:
-            fieldnames.append("Lat"); changed = True
-        if "Lon" not in fieldnames:
-            fieldnames.append("Lon"); changed = True
-
-        for r in rows:
-            lat_now = (r.get("Lat") or "").strip()
-            lon_now = (r.get("Lon") or "").strip()
-            if lat_now and lon_now:
-                continue  # already filled
-
-            key = _compose_addr_key_from_rowdict(r)
-            if not key:
-                continue
-            hit = sidecar.get(key)
-            if not hit:
-                continue
-            la, lo = hit
-            r["Lat"] = f"{la:.6f}"
-            r["Lon"] = f"{lo:.6f}"
-            changed = True
-
-        if not changed:
-            return
-
-        # 3) Write back (with backup), so the map & grid can see coordinates
-        try:
-            _backup(CUSTOMERS_PATH)
+                for r in rdr:
+                    try:
+                        la = float((r.get("Lat") or r.get("lat") or "").strip())
+                        lo = float((r.get("Lon") or r.get("lon") or "").strip())
+                    except Exception:
+                        continue
+                    comp = (r.get("Company") or r.get("company") or "").strip().lower()
+                    addrk = (r.get("AddressKey") or r.get("addresskey") or "").strip().lower()
+                    if comp:
+                        by_company[comp] = (la, lo)
+                    if addrk:
+                        by_addr[addrk] = (la, lo)
         except Exception:
             pass
-        try:
-            with CUSTOMERS_PATH.open("w", encoding="utf-8", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=fieldnames)
-                w.writeheader()
-                for r in rows:
-                    w.writerow(r)
-        except Exception:
-            # Best-effort; we won’t crash UI
-            pass
+        return by_company, by_addr
 
     def _load_customers_for_map():
-        """Return (records, skipped_count). Pulls coords from main CSV (Lat/Lon)."""
+        """Return (records, skipped_count).
+        - Pulls coords from customers.csv when present (Lat/Lon).
+        - If missing, tries customers_geo.csv via *Company* or *AddressKey* (no geocoding, no disk writes).
+        - Sales/Day is read directly from customers.csv; if blank, we show "—".
+        """
         recs = []
         skipped = 0
+
+        by_company, by_addr = _read_geo_sidecar_maps()
 
         def _first_nonempty_row(row, keys):
             for k in keys:
@@ -4462,40 +4883,58 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
             return ""
 
         def _money_fmt_local(s):
-            s = (s or "").strip().replace("$", "").replace(",", "")
+            s = (s or "").strip()
             if not s:
                 return ""
+            # If the CSV already has $/commas, keep them; otherwise try to pretty-print
+            if s.startswith("$"):
+                return s
             try:
-                return f"${float(s):.2f}"
+                return f"${float(s.replace(',', '').replace('$','')):,.2f}"
             except Exception:
-                return ""
+                return s
 
         try:
-            # Prefer lat/lon columns in customers.csv (after we just merged sidecar coords)
             if CUSTOMERS_PATH.exists():
                 with CUSTOMERS_PATH.open("r", encoding="utf-8", newline="") as f:
                     rdr = csv.DictReader(f)
                     for r in rdr:
-                        lat = _first_nonempty_row(r, ["Lat", "Latitude", "lat", "LAT"])
-                        lon = _first_nonempty_row(r, ["Lon", "Lng", "Longitude", "longitude", "lon", "LON"])
-                        try:
-                            lat_f = float(str(lat)) if lat else None
-                            lon_f = float(str(lon)) if lon else None
-                        except Exception:
-                            lat_f = lon_f = None
+                        # Pull coords from CSV or sidecar
+                        lat = _first_nonempty_row(r, ["Lat", "Latitude", "lat", "LAT"]) or ""
+                        lon = _first_nonempty_row(r, ["Lon", "Lng", "Longitude", "longitude", "lon", "LON"]) or ""
 
+                        lat_f = None; lon_f = None
+                        if lat and lon:
+                            try:
+                                lat_f = float(str(lat))
+                                lon_f = float(str(lon))
+                            except Exception:
+                                lat_f = lon_f = None
+                        if lat_f is None or lon_f is None:
+                            # Try sidecar by company, then by address key
+                            company_key = (_first_nonempty_row(r, ["Company"]) or "").lower().strip()
+                            addr_key = _compose_addr_key_from_rowdict(r)
+                            hit = None
+                            if company_key and company_key in by_company:
+                                hit = by_company.get(company_key)
+                            elif addr_key and addr_key in by_addr:
+                                hit = by_addr.get(addr_key)
+                            if hit:
+                                lat_f, lon_f = hit
                         if lat_f is None or lon_f is None:
                             skipped += 1
                             continue
 
-                        company = _first_nonempty_row(r, ["Company"])
+                        company = _first_nonempty_row(r, ["Company"]) or "(Unnamed)"
                         cltv    = _money_fmt_local(_first_nonempty_row(r, ["CLTV"]))
-                        spd     = _money_fmt_local(_first_nonempty_row(r, ["Sales/Day", "Sales per Day", "Sales Per Day"]))
+                        # Pull Sales/Day directly; show em dash if blank
+                        spd_raw = _first_nonempty_row(r, ["Sales/Day", "Sales per Day", "Sales Per Day"]) or ""
+                        spd     = _money_fmt_local(spd_raw) if spd_raw else "—"
 
                         popup_html = (
-                            f"<b>{company or '(Unnamed)'}</b><br/>"
+                            f"<b>{company}</b><br/>"
                             f"CLTV: {cltv or '$0.00'}<br/>"
-                            f"Sales/Day: {spd or '$0.00'}"
+                            f"Sales/Day: {spd}"
                         )
 
                         recs.append({
@@ -4503,7 +4942,6 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                             "company": company, "cltv": cltv, "spd": spd,
                             "popup_html": popup_html
                         })
-
         except Exception as e:
             print("map loader error:", e)
 
@@ -4564,23 +5002,20 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         except Exception:
             return False
 
-    def _open_customer_map(window):
-        """Build HTML map and open it. Updates -MAP_STATUS- label."""
+    def _open_customer_map(window_ref):
+        """Build HTML map and open it. Updates -MAP_STATUS- label.
+        NOTE: No startup buffering. We rely only on existing Lat/Lon or cached sidecar.
+        """
         try:
             out_path = APP_DIR / "customer_map.html"
         except Exception:
-            out_path = Path.cwd() / "customer_map.html"
-
-        # Ensure customers.csv has coordinates merged from sidecar before building the map
-        try:
-            _merge_sidecar_coords_into_customers()
-        except Exception:
-            pass
+            from pathlib import Path as _P
+            out_path = _P.cwd() / "customer_map.html"
 
         recs, skipped = _load_customers_for_map()
         if not recs and skipped == 0:
             try:
-                window["-MAP_STATUS-"].update("No customers yet.")
+                window_ref["-MAP_STATUS-"].update("No customers yet.")
             except Exception:
                 pass
             return
@@ -4588,7 +5023,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         ok = _write_leaflet_map_html(recs, str(out_path))
         if not ok:
             try:
-                window["-MAP_STATUS-"].update("Error writing map HTML.")
+                window_ref["-MAP_STATUS-"].update("Error writing map HTML.")
             except Exception:
                 pass
             return
@@ -4602,7 +5037,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
         msg = f"Opened map ({len(recs)} pin(s){', skipped ' + str(skipped) + ' without coords' if skipped else ''})."
         try:
-            window["-MAP_STATUS-"].update(msg)
+            window_ref["-MAP_STATUS-"].update(msg)
         except Exception:
             pass
 
@@ -4632,9 +5067,9 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         window["-WARM-"].update(str(warm))
         window["-REPLRATE-"].update(f"{total_replied} / {total_sent}")
 
+    # ---- Initial post-mount refreshes & timers (SAFE — after window exists) ----
     refresh_fire_state()
     refresh_results_metrics()
-    # NEW: update Emails Sent column/colors at startup
     try:
         window._refresh_emails_sent_column()
     except Exception:
@@ -4650,14 +5085,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
     # Start scoreboard auto-refresh (every 5 seconds)
     _start_scoreboard_timer(window, interval_ms=5000)
 
-    # NEW: one-time merge of sidecar coords into customers.csv at startup
-    try:
-        _merge_sidecar_coords_into_customers()
-    except Exception:
-        pass
-
+# ===== CHUNK 7a / 8 — END =====
+    # ===== CHUNK 7b / 8 — START =====
     # ============================================================
-    # Event loop
+    # Event loop (CONTINUES INSIDE main_after_mount(...))
     # ============================================================
     while True:
         event, values = window.read(timeout=300)
@@ -5064,7 +5495,7 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
 
         elif event == "-DIAL_ADD100-":
             try:
-                add = [[""] * len(HEADER_FIELDS) + ["○", "○", "○"] + ([""] * 8) for _ in range(100)]
+                add = [[""] * len(HEADER_FIELDS) + ["○", "○", "○"] + (([""] * 8)) for _ in range(100)]
                 try:
                     cur = dial_sheet.get_sheet_data() or []
                 except Exception:
@@ -5270,39 +5701,11 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
                         break
                 cust["Notes"] = last_note
 
-            # ---- Lat/Lon: pre-fill if possible, else leave blank (autosave/geocoder or sidecar merge will fill) ----
-            if ("Lat" in CUSTOMER_FIELDS) or ("Lon" in CUSTOMER_FIELDS):
-                lat_val, lon_val = "", ""
-
-                # Try to build the best address we can from warm_row
-                addr_parts = []
-                for key in ("Address", "City", "State", "ZIP"):
-                    val = warm_row.get(key, "")
-                    if (val or "").strip():
-                        addr_parts.append(str(val).strip())
-                if addr_parts:
-                    addr = ", ".join(addr_parts)
-                else:
-                    # Fallback to Location field
-                    addr = (cust.get("Location") or "").strip()
-
-                # If the geocode sidecar is available, try to look it up now
-                try:
-                    key = addr.lower().strip()
-                    # __geo_sidecar is defined in Chunk 5 when the app starts
-                    if key and "__geo_sidecar" in globals() and isinstance(globals()["__geo_sidecar"], dict):
-                        hit = globals()["__geo_sidecar"].get(key)
-                        if hit and isinstance(hit, (tuple, list)) and len(hit) >= 2:
-                            lat_val = f"{float(hit[0]):.6f}"
-                            lon_val = f"{float(hit[1]):.6f}"
-                except Exception:
-                    # It's fine to miss; merge helper or autosave will fill later
-                    pass
-
-                if "Lat" in CUSTOMER_FIELDS:
-                    cust["Lat"] = lat_val
-                if "Lon" in CUSTOMER_FIELDS:
-                    cust["Lon"] = lon_val
+            # ---- Lat/Lon: leave blank here (map open reads sidecar / existing CSV) ----
+            if ("Lat" in CUSTOMER_FIELDS):
+                cust["Lat"] = cust.get("Lat", "")
+            if ("Lon" in CUSTOMER_FIELDS):
+                cust["Lon"] = cust.get("Lon", "")
 
             try:
                 existing = []
@@ -5459,9 +5862,10 @@ def main_after_mount(window, sheet, dial_sheet, leads_host, dialer_host, templat
         except Exception:
             pass
 
-    window.close()
-# ===== CHUNK 6 / 7 — END =====
-# ===== CHUNK 7 / 7 — START =====
+    # NOTE: Do NOT close the window here; Chunk 2 handles window.close() in a finally.
+    # ===== CHUNK 7b / 8 — END =====
+
+# ===== CHUNK 8 / 8 — START =====
 # ============================================================
 # Email Campaigns: enroll helpers and drafting logic
 # (integrates with hourly task from Chunk 5 via _draft_next_stage_stub)
@@ -5730,8 +6134,4 @@ if __name__ == "__main__":
             pass
         input("\n\n[ERROR] Press Enter to exit...")
 
-# ===== CHUNK 7 / 7 — END =====
-
-
-
-
+# ===== CHUNK 8 / 8 — END =====

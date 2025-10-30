@@ -1,33 +1,73 @@
-# Byte-compiled / cache files
+# -----------------------
+# Python / cache
+# -----------------------
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+.python-version
 
+# -----------------------
 # Virtual environments
+# -----------------------
 .venv/
-env/
 venv/
+env/
+.env
 
-# Build and distribution artifacts
+# -----------------------
+# Build / dist / installers
+# -----------------------
 dist/
 build/
 output/
+Output/
 *.spec
-
-# Installer outputs
 *.exe
 *.msi
-*.iss
+# NOTE: keep the .iss (Inno Setup script) tracked:
+#!*.iss
 
-# IDE/editor configs
+# -----------------------
+# IDE / Editor
+# -----------------------
 .vscode/
 .idea/
 
-# Logs and temp
+# -----------------------
+# OS clutter
+# -----------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -----------------------
+# Logs / temp / backups
+# -----------------------
 *.log
 *.tmp
 *.bak
+_backups/
+updater_logs/
 
-# CSVs / local datasets (optional: remove if you want them tracked)
+# -----------------------
+# App-specific local config & data
+# -----------------------
+# Use app.example.ini in repo; keep real app.ini local
+app.ini
+
+# If any user data ever gets written inside repo, don’t commit it
+GrowthFarm/
+GrowthFarm Test Account/
+
+# -----------------------
+# Data files (optional)
+# -----------------------
+# If you don’t want CSVs in the repo, leave this on.
+# Remove this line if you decide to version certain CSV templates.
 *.csv
