@@ -73,9 +73,9 @@ from gf_sheet_utils import (
 
 # --- updater (safe import) ---
 try:
-    from gf_updater import update_ui_flow  # performs check/download/install + UI popups
-except Exception as _upd_err:
-    def update_ui_flow(window=None):
+    from gf_updater import check_and_prompt  # checks GitHub & prompts to download
+except Exception:
+    def check_and_prompt(window, current_version):
         # Fallback so the app doesn't crash if gf_updater.py is missing
         try:
             import PySimpleGUI as _sg
@@ -776,7 +776,12 @@ def run_event_loop(window, context):
             except Exception:
                 pass
             try:
-                update_ui_flow(window)
+                # import your version string from main module
+                try:
+                    from growthfarm import APP_VERSION
+                except Exception:
+                    APP_VERSION = "0.0.0"
+                check_and_prompt(window, APP_VERSION)
             finally:
                 try:
                     window["-UPDATE-"].update(disabled=False)
@@ -1076,4 +1081,5 @@ def run_event_loop(window, context):
             _refresh_campaign_table(window)
 
     window.close()
+
 

@@ -24,7 +24,7 @@ if str(_VENDOR_PSG) not in _sys.path:
 import PySimpleGUI as sg  # noqa
 # --------------------------------------------------------------------------
 
-APP_VERSION = "2025-10-14"
+APP_VERSION = "2025-10-30"
 
 
 def _first_run_prompt() -> bool:
